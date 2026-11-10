@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+coordinate-session*.json
+*.log
+state.json
+last_*.json
+yolo-preview.jpg
