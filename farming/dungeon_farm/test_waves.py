@@ -2,6 +2,14 @@ import unittest
 from dungeon_farm.waves import WaveTracker
 
 class WaveTests(unittest.TestCase):
+    def test_confirmation_budget_is_ten_seconds_and_restarts_after_new_wave(self):
+        w=WaveTracker();w.update(False,20)
+        self.assertFalse(w.confirmation_timed_out(29.99))
+        self.assertTrue(w.confirmation_timed_out(30))
+        w.update(True,31)
+        self.assertFalse(w.confirmation_timed_out(40))
+        w.update(False,41);w.suspend()
+        self.assertFalse(w.confirmation_timed_out(60))
     def test_delayed_second_wave_cancels_ready_exit(self):
         w=WaveTracker()
         self.assertEqual(w.update(True,0),(False,False))

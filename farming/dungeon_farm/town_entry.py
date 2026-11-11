@@ -13,7 +13,8 @@ from dungeon_farm.revival import Revival
 
 def prepare(control,report,allow_town_entry=False,dungeon='根特东门',difficulty='普通级'):
     root=Path(__file__).resolve().parents[1]
-    profile=json.loads((root/'coordinate-session.json').read_text(encoding='utf8'))
+    from dungeon_farm.characters import selected_profile
+    profile=selected_profile(control.character)
     win=Windows();keys=CycleInputs(win);screen=ScreenSignals(dungeon)
     win.u.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)]
     conn=CoordinateConnection(profile,connector=connect_solo)
@@ -53,12 +54,18 @@ def prepare(control,report,allow_town_entry=False,dungeon='根特东门',difficu
                 continue
             if sample and not enter_sent:
                 observed=dungeon_difficulty(signals,dungeon)
-                if observed==difficulty and (signals.get('finished') or read_doors(conn.reader,sample['scene'])):
-                    report({'state':'entry_ready','detail':difficulty});return 'ready'
+                from dungeon_farm.screen_signals import normalize
+                # A manual entry supplies the selected difficulty. This client
+                # clips Arden's long HUD title before the difficulty suffix.
+                # Require the exact map and valid room; reject a visible mismatch.
+                manual_arden=(dungeon=='阿登高地' and observed is None and
+                              normalize(dungeon) in ''.join(normalize(t) for t in signals.get('texts',[])))
+                if (observed==difficulty or manual_arden) and (signals.get('finished') or read_doors(conn.reader,sample['scene'],dungeon)):
+                    report({'state':'entry_ready','detail':difficulty+('（沿用手动入场选择）' if manual_arden else '')});return 'ready'
                 unconfirmed+=1
                 if unconfirmed>=5:return 'wrong_dungeon'
                 continue
-            if sample and fresh_dungeon_room(signals,sample,None,read_doors(conn.reader,sample['scene']),difficulty,dungeon):
+            if sample and fresh_dungeon_room(signals,sample,None,read_doors(conn.reader,sample['scene'],dungeon),difficulty,dungeon,allow_hidden_difficulty=enter_sent):
                 report({'state':'entry_ready'});return 'ready'
             if sample:
                 unconfirmed+=1
@@ -105,6 +112,8 @@ def prepare(control,report,allow_town_entry=False,dungeon='根特东门',difficu
                 elif selected:return 'difficulty_unconfirmed'
                 continue
             if enter_sent:continue
+            if dungeon=='阿登高地' and not allow_town_entry:
+                return 'waiting_dungeon'
             reader=conn.reader
             base=reader.uint(reader.local_root) if reader else 0
             scene=reader.uint(base+0xb8) if base else None

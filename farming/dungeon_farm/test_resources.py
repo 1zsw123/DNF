@@ -10,9 +10,10 @@ class ResourceTests(unittest.TestCase):
         return frame
     def test_full_orbs_do_not_consume_item(self):
         self.assertFalse(need_recovery(orb_fill(self.frame(1,1)),.2))
-    def test_only_health_below_thirty_percent_requests_recovery(self):
-        self.assertTrue(need_recovery(orb_fill(self.frame(.275,1)),.2))
-        for hp,mp in ((.3,1),(.4,.1),(1,.1)):
+    def test_only_health_below_fifty_percent_requests_recovery(self):
+        for hp in (.275,.4,.475):
+            self.assertTrue(need_recovery(orb_fill(self.frame(hp,1)),.2))
+        for hp,mp in ((.5,1),(.6,.1),(1,.1)):
             self.assertFalse(need_recovery(orb_fill(self.frame(hp,mp)),.2))
     def test_stale_resource_read_is_not_used(self):
         self.assertFalse(need_recovery(orb_fill(self.frame(.2,.1)),3))

@@ -29,7 +29,7 @@ def infer_entry(doors, position):
         return nearest['direction']
     return None
 
-def read_doors(reader, scene):
+def read_doors(reader, scene, dungeon=None):
     result=[]
     for address in reader.object_addresses(scene) or ():
         raw=reader.process.read(address,0x25c)
@@ -44,6 +44,13 @@ def read_doors(reader, scene):
         if '門' not in name and name not in pursuit: continue
         direction=pursuit.get(name) or next((d for token,d in [('左側','left'),('左邊','left'),('右側','right'),('右邊','right'),('上側','up'),('上邊','up'),('下側','down'),('下邊','down')] if token in name),None)
         x,y,z=struct.unpack_from('<3f',raw,0x18c)
+        if dungeon=='阿登高地':
+            # Verified parked doors: (1343,1454), (1289,1537), (1312,1539).
+            # They remain in the object list despite lying outside the room.
+            if y>1000:continue
+            # Reused 下側 assets occur on the north edge at (226,100) and
+            # (273,101). Keep them distinct from south exits around y=490.
+            if direction=='down' and 0<y<150:direction='up'
         if direction and (x!=0 or y!=0) and all(math.isfinite(v) and abs(v)<100000 for v in (x,y,z)):
             result.append({'direction':direction,'x':x,'y':y})
     return result

@@ -16,4 +16,6 @@ dungeon_farm/*-trace.json
 dungeon_farm/*-failure.json
 dungeon_farm/unverified-monsters.json
 dungeon_farm/gui-preferences.json
+dungeon_farm/characters*.json
+dungeon_farm/team-settings*
 dungeon_farm/runs/

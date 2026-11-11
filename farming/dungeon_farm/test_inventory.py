@@ -1,5 +1,5 @@
 import unittest
-from dungeon_farm.inventory import quantities,disassemble_needed,cube_quantity
+from dungeon_farm.inventory import quantities,disassemble_needed,cube_quantity,cube_reserve
 
 class InventoryTests(unittest.TestCase):
     def test_real_split_decimal_ocr_is_not_used_as_quantity(self):
@@ -14,6 +14,13 @@ class InventoryTests(unittest.TestCase):
         self.assertIsNone(quantities(['1716白色小晶块','无色小晶块x34'])['cubes'])
     def test_stock_policy(self):
         self.assertFalse(disassemble_needed(1716))
-        self.assertFalse(disassemble_needed(100))
-        self.assertTrue(disassemble_needed(99))
+        self.assertFalse(disassemble_needed(150))
+        self.assertTrue(disassemble_needed(149))
         self.assertTrue(disassemble_needed(None))
+    def test_reserve_uses_observed_depletion_not_skill_key_count(self):
+        self.assertEqual(cube_reserve(None,1149),150)
+        self.assertFalse(disassemble_needed(1149,cube_reserve(None,1149)))
+        self.assertEqual(cube_reserve(1213,1157),150)
+        self.assertEqual(cube_reserve(500,400),230)
+        self.assertEqual(cube_reserve(200,250),150)
+        self.assertEqual(cube_reserve(200,None),150)

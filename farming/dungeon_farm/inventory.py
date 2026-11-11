@@ -13,7 +13,18 @@ def quantities(texts):
         if match:cubes=int(match[1])
     return {'gold':gold,'cubes':cubes}
 
-def disassemble_needed(stock,reserve=100):
+def cube_reserve(start_stock,end_stock):
+    """Keep two observed rounds plus a buffer, never inflate from key attempts.
+
+    Inventory deltas are net depletion, not exact skill costs (drops may offset
+    use). The fixed floor protects against missing baselines and small deltas.
+    """
+    valid=lambda n:type(n) is int and n>=0
+    depletion=max(0,start_stock-end_stock) if valid(start_stock) and valid(end_stock) else 0
+    return max(150,2*depletion+30)
+
+
+def disassemble_needed(stock,reserve=150):
     # Unknown stock keeps the previously authorized maintenance fallback.
     return stock is None or stock<reserve
 

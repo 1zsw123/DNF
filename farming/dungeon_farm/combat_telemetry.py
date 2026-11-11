@@ -62,13 +62,15 @@ def observe(connection, pid, facing=None, allowed_types=None, allowed_apcs=None,
     addresses = reader.object_addresses(scene)
     if not addresses:
         return None
-    enemies = []; unknown = set(); unknown_details=[]
+    enemies = []; unknown = set(); unknown_details=[];friendly_names=[]
     for address in set(addresses):
         raw = reader.process.read(address, 0x25c)
         if not raw:
             return None
         vt, kind, obj_scene = (struct.unpack_from('<I', raw, offset)[0] for offset in (0,0x90,0xb8))
         if kind not in (529,273) or obj_scene != scene or address==sample['self_base']:
+            continue
+        if kind==273 and sample.get('party') and address==sample['party']['base']:
             continue
         name=''
         if kind==273:
@@ -77,7 +79,8 @@ def observe(connection, pid, facing=None, allowed_types=None, allowed_apcs=None,
             namebytes=reader.process.read(ptr,96) if ptr else None
             name=namebytes.decode('utf-16le',errors='replace').split('\0',1)[0] if namebytes else ''
             if name in (reader.self_name,reader.leader_name):continue
-            if name in (friendly_apcs or {}).get(vt-reader.delta,()):continue
+            if name in (friendly_apcs or {}).get(vt-reader.delta,()):
+                friendly_names.append(name);continue
             recognized=name in allowed_apcs.get(vt-reader.delta,())
         else:
             if vt-reader.delta in (friendly_monsters or {}):
@@ -108,6 +111,7 @@ def observe(connection, pid, facing=None, allowed_types=None, allowed_apcs=None,
     if now-sample['time']>.1:
         return None
     sample['unverified_monsters'] = sorted(unknown)
+    sample['friendly_apcs']=friendly_names
     sample['unverified_details'] = unknown_details
     observation = Observation(now, scene=f'{pid}:{scene:x}', position=tuple(sample['self'][:2]),
                               facing=facing, enemies=tuple(enemies), perception_valid=not unknown)

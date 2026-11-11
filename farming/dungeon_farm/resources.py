@@ -15,4 +15,4 @@ def need_recovery(resources,age):
                 # Loading/black frames hide both HUD orbs. Zero/zero is not
                 # evidence of low health and must never consume an item.
                 (resources['hp_fill']>0 or resources['mp_fill']>0) and
-                resources['hp_fill']<.30)
+                resources['hp_fill']<.50)

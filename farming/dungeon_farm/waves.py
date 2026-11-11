@@ -12,6 +12,9 @@ class WaveTracker:
         # Unobserved time while paused/away cannot certify an empty room.
         self.empty_since=None
 
+    def confirmation_timed_out(self,now):
+        return self.empty_since is not None and now-self.empty_since>=10
+
     def update(self, has_enemies, now):
         new_wave=False
         if has_enemies:

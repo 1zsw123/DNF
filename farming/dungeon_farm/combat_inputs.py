@@ -9,16 +9,30 @@ HOTBAR = dict(FREE_ATTACKS,q=0x10,w=0x11,e=0x12,r=0x13,t=0x14,y=0x15,d=0x20,f=0x
 class CombatInputs:
     def __init__(self, window, all_skills=False):
         self.window = window
-        self.allowed={**HOTBAR,'3':0x04} if all_skills else FREE_ATTACKS
+        self.all_skills=all_skills
+        self.allowed={**HOTBAR,'1':0x02,'3':0x04,'4':0x05} if all_skills else FREE_ATTACKS
 
     def tap(self, key, hwnd, cancelled=lambda: False):
         if key not in self.allowed:
             raise ValueError('禁止无色技能和未验证按键：' + key)
+        return self._tap_scan(self.allowed[key],key,hwnd,cancelled)
+
+    def cast(self,skill,hwnd,cancelled=lambda:False):
+        if not skill.input_sequence:return self.tap(skill.key,hwnd,cancelled)
+        if not self.all_skills or skill.mode!='entry_buff' or skill.input_sequence!=('right','right','space'):
+            raise ValueError('未验证的技能指令')
+        for key,scan in (('right',0x4d),('right',0x4d),('space',0x39)):
+            if not self._tap_scan(scan,key,hwnd,cancelled):return False
+            time.sleep(.055)
+        return True
+
+    def _tap_scan(self,scan,key,hwnd,cancelled):
         if cancelled() or not self.window.foreground(hwnd):
             return False
         self.window.release()
         inp = INPUT(type=1)
-        inp.ki = KEYBDINPUT(0, self.allowed[key], 0x0008, 0, 0)
+        flags=0x0008|(0x0001 if key=='right' else 0)
+        inp.ki = KEYBDINPUT(0, scan, flags, 0, 0)
         if self.window.u.SendInput(1,C.byref(inp),C.sizeof(inp)) != 1:
             raise OSError('技能输入失败')
         try:
@@ -26,7 +40,7 @@ class CombatInputs:
             while time.monotonic()<deadline and not cancelled() and self.window.foreground(hwnd):
                 time.sleep(.01)
         finally:
-            inp.ki.dwFlags=0x0008|0x0002
+            inp.ki.dwFlags=flags|0x0002
             if self.window.u.SendInput(1,C.byref(inp),C.sizeof(inp)) != 1:
                 raise OSError('技能松键失败')
         return True

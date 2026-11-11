@@ -1,4 +1,40 @@
 {
+  "阿登高地": {
+    "status": "冒险级已实测通关一局 · 新布局与连续重进待验证",
+    "monster_types": [
+      "0x16ff424"
+    ],
+    "apc_targets": {},
+    "friendly_apcs": {
+      "0x16fe0e4": [
+        "偉大的杜爾夫"
+      ]
+    },
+    "friendly_monsters": {},
+    "route_rules": [
+      {
+        "entry": [
+          "left",
+          null
+        ],
+        "doors": {
+          "left": [
+            22,
+            296
+          ],
+          "right": [
+            1088,
+            212
+          ],
+          "down": [
+            766,
+            492
+          ]
+        },
+        "exit": "down"
+      }
+    ]
+  },
   "根特东门": {
     "status": "提速版 · 已连续通关 4:01 / 3:08；Alt 分解修复已确认",
     "monster_types": [

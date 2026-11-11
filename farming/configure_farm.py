@@ -20,11 +20,11 @@ def make_profile(client_path, self_name):
         raise ValueError('客户端版本不同，不能套用当前坐标结构。')
     own = self_name.strip()
     if not own:
-        raise ValueError('请填写本机狂战士的完整角色名。')
+        raise ValueError('请填写本机角色的完整名字。')
     return {'enabled': True, 'automatic_reconnect': True,
             'client_path': str(path), 'client_sha256': digest,
             'self_name': own, 'leader_name': '__unused_solo_leader__',
-            'role_types': {own: 0x016F972C},
+            'role_types': {own: 0x016F972C, '__unused_solo_leader__': 0x016F972C},
             'self_yolo_compatible': False, 'leader_yolo_compatible': False}
 
 
@@ -32,8 +32,8 @@ def configure():
     saved = False
     root = tk.Tk(); root.title('DNF 刷图助手 · 本机配置')
     panel = ttk.Frame(root, padding=20); panel.pack(fill='both', expand=True)
-    ttk.Label(panel, text='已适配客户端 / 狂战士技能栏', font=('Microsoft YaHei UI', 15)).pack(anchor='w')
-    ttk.Label(panel, text='选择本机 DNF.exe；改名不会自动适配其他职业。').pack(anchor='w', pady=10)
+    ttk.Label(panel, text='已适配客户端 / 多角色刷图与组队', font=('Microsoft YaHei UI', 15)).pack(anchor='w')
+    ttk.Label(panel, text='选择本机 DNF.exe；打开助手后点击“读取当前角色”核对实际角色类型。').pack(anchor='w', pady=10)
     client = tk.StringVar(); own = tk.StringVar(value='上头狂战')
     target = ROOT / 'coordinate-session.json'
     if target.exists():
@@ -48,7 +48,7 @@ def configure():
         selected = filedialog.askopenfilename(parent=root, title='选择 DNF.exe', filetypes=[('DNF.exe', '*.exe')])
         if selected: client.set(selected)
     ttk.Button(line, text='浏览', command=browse).pack(side='left', padx=8)
-    ttk.Label(panel, text='本机狂战士角色名').pack(anchor='w', pady=(12, 3))
+    ttk.Label(panel, text='本机角色名（之后仍需读取当前角色核对）').pack(anchor='w', pady=(12, 3))
     ttk.Entry(panel, textvariable=own, width=32).pack(anchor='w')
     def save():
         nonlocal saved

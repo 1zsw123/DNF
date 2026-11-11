@@ -5,6 +5,13 @@ from dungeon_farm.screen_signals import lifecycle_signals
 def item(text,x=500,y=350):return [[[x-20,y-5],[x+20,y-5],[x+20,y+5],[x-20,y+5]],text,.99]
 
 class ReplayTests(unittest.TestCase):
+    def test_arden_alias_and_hidden_suffix_require_known_replay_difficulty(self):
+        s={'texts':['决战的都市-亚顿-']}
+        self.assertIsNone(dungeon_difficulty(s,'阿登高地'))
+        self.assertFalse(fresh_dungeon_room(s,{'scene':20},10,[{}],'冒险级','阿登高地'))
+        self.assertTrue(fresh_dungeon_room(s,{'scene':20},10,[{}],'冒险级','阿登高地',True))
+        self.assertFalse(fresh_dungeon_room({'texts':['决战的都市-亚顿-王者级']},{'scene':20},10,[{}],'冒险级','阿登高地',True))
+        self.assertEqual(dungeon_difficulty({'texts':['决战的都市-亚顿-冒']},'阿登高地'),'冒险级')
     def test_selected_pursuit_card_is_recognized_without_difficulty_badge(self):
         s=lifecycle_signals([item('追击歼灭战',425,73),item('Lv.062~065',425,85),item('返回城镇',590,442)],'追击歼灭战')
         self.assertTrue(s['target_selected'])

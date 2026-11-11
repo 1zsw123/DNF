@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from dungeon_farm.runtime import Control, run
 from dungeon_farm.utilities import maintenance
+from dungeon_farm.characters import load_characters, save_characters, discover_current, ROTATIONS
 
 DATA=Path(__file__).resolve().parent
 STATES={
@@ -36,7 +37,7 @@ STATES={
  'inventory_checked':'已核对金币与无色库存','inspect_inventory':'正在核对金币与无色库存',
  'inventory_after_maintenance':'已记录维护后的余额',
  'round_statistics':'本局收益已记录',
- 'recovering':'血量低于 30%，使用快捷栏 3 雷米援助',
+ 'recovering':'血量低于 50%，使用当前角色配置的血药',
  'revive':'确认死亡，按 X 复活','waiting_revive':'已按 X，等待复活',
  'revived':'已复活，恢复战斗','revive_failed':'按 X 后仍未复活，已停止',
  'maintenance_confirmed':'已识别维护成功提示，自动确认',
@@ -44,13 +45,25 @@ STATES={
  'wrong_dungeon':'未确认目标地图或难度，已停止，不启动战斗',
  'waiting_dungeon':'请进目标副本，或使用自动入场按钮',
  'difficulty_unconfirmed':'所选难度尚未确认，未发送入场键',
+ 'team_connecting':'正在建立双机组队连接',
+ 'waiting_partner':'等待队友连接或靠近门口',
+ 'following':'小号正在寻路跟随大号','following_close':'已跟上大号',
+ 'waiting_leader':'小号已完成维护，等待大号重进',
+ 'waiting_partner_ready':'等待小号卖装、修理完成，再按 F10',
+ 'team_round_unconfirmed':'未确认同一轮组队战斗，已停止重进',
+ 'boss_route':'已按小地图规划通往 Boss 的路线',
+ 'waiting_minimap':'等待确认小地图位置和 Boss 路线',
+ 'entry_buff':'进图施放状态技能',
+ 'entry_helper':'进图按 4 召唤帮手（每局一次）',
+ 'minimap_timeout':'小地图确认超过10秒，已暂停，请检查画面',
+ 'waiting_boss_result':'已在 Boss 房，等待后续怪物或结算',
 }
 
 class App:
     def __init__(self):
         C.WinDLL('user32').SetProcessDPIAware()
         self.root=tk.Tk();self.root.title('DNF 刷图助手')
-        self.root.geometry('650x900');self.root.minsize(620,860)
+        self.root.geometry('700x1000');self.root.minsize(650,920)
         self.root.configure(bg='#edf2f7')
         self.style=ttk.Style();self.style.theme_use('clam')
         self.style.configure('TFrame',background='#edf2f7')
@@ -61,17 +74,36 @@ class App:
         self.messages=queue.SimpleQueue();self.control=None;self.worker=None;self.closing=False
         self.last_state=None;self.door_choices=[]
         self.presets=json.loads((DATA/'presets.json').read_text(encoding='utf-8'))
-        self.selected=tk.StringVar(value='追击歼灭战');self.solo=tk.BooleanVar(value=True)
-        self.difficulty=tk.StringVar(value='普通级');self.run_limit=tk.StringVar(value='1')
+        self.selected=tk.StringVar(value='阿登高地');self.solo=tk.BooleanVar(value=True)
+        self.characters=load_characters()
+        self.character_name=tk.StringVar(value=self.characters[0]['name'])
+        self.rotation=tk.StringVar(value=self.characters[0]['rotation'])
+        self.auto_potion=tk.BooleanVar(value=self.characters[0].get('auto_potion',False))
+        self.difficulty=tk.StringVar(value='冒险级');self.run_limit=tk.StringVar(value='1')
         try:
             prefs=json.loads((DATA/'gui-preferences.json').read_text(encoding='utf8'))
             if prefs.get('dungeon') in self.presets:self.selected.set(prefs['dungeon'])
-            if prefs.get('difficulty') in ('普通级','冒险级'):self.difficulty.set(prefs['difficulty'])
+            if prefs.get('difficulty') in ('普通级','冒险级','勇士级'):self.difficulty.set(prefs['difficulty'])
             if 0<=int(prefs.get('runs',1))<=100:self.run_limit.set(str(prefs.get('runs',1)))
+            if prefs.get('character') in [c['name'] for c in self.characters]:self.character_name.set(prefs['character'])
         except (OSError,ValueError,TypeError):pass
         panel=ttk.Frame(self.root,padding=22);panel.pack(fill='both',expand=True)
         ttk.Label(panel,text='DNF 刷图助手',font=('Microsoft YaHei UI',21,'bold')).pack(anchor='w')
         ttk.Label(panel,text='技能栏轮换 · 自动绕障 · F10 重进',foreground='#5b6b80').pack(anchor='w',pady=(4,18))
+        charrow=ttk.Frame(panel);charrow.pack(fill='x',pady=(0,8))
+        ttk.Label(charrow,text='角色').pack(side='left',padx=(0,12))
+        self.character_box=ttk.Combobox(charrow,textvariable=self.character_name,values=[c['name'] for c in self.characters],state='readonly',width=18)
+        self.character_box.pack(side='left');self.character_box.bind('<<ComboboxSelected>>',lambda e:self.select_character())
+        self.discover_button=ttk.Button(charrow,text='读取当前角色',command=self.read_character)
+        self.discover_button.pack(side='left',padx=(10,0))
+        self.team_button=ttk.Button(charrow,text='双机组队设置',command=self.configure_team)
+        self.team_button.pack(side='left',padx=(8,0))
+        skillrow=ttk.Frame(panel);skillrow.pack(fill='x',pady=(0,8))
+        ttk.Label(skillrow,text='技能').pack(side='left',padx=(0,12))
+        self.rotation_box=ttk.Combobox(skillrow,textvariable=self.rotation,values=ROTATIONS,state='readonly',width=13)
+        self.rotation_box.pack(side='left')
+        self.potion_box=ttk.Checkbutton(skillrow,text='3 已放血药（低于50%才用）',variable=self.auto_potion)
+        self.potion_box.pack(side='left',padx=(10,0))
         row=ttk.Frame(panel);row.pack(fill='x')
         ttk.Label(row,text='副本').pack(side='left',padx=(0,12))
         self.maps=ttk.Combobox(row,textvariable=self.selected,values=list(self.presets),state='readonly',font=('Microsoft YaHei UI',11),width=18)
@@ -79,7 +111,7 @@ class App:
         self.mode=ttk.Checkbutton(row,text='单人模式',variable=self.solo);self.mode.pack(side='right')
         options=ttk.Frame(panel);options.pack(fill='x',pady=(8,0))
         ttk.Label(options,text='难度').pack(side='left',padx=(0,12))
-        self.difficulties=ttk.Combobox(options,textvariable=self.difficulty,values=['普通级','冒险级'],state='readonly',width=10)
+        self.difficulties=ttk.Combobox(options,textvariable=self.difficulty,values=['普通级','冒险级','勇士级'],state='readonly',width=10)
         self.difficulties.pack(side='left')
         ttk.Label(options,text='  局数（0=直到疲劳不足）').pack(side='left')
         self.limits=ttk.Spinbox(options,from_=0,to=100,textvariable=self.run_limit,width=4);self.limits.pack(side='left')
@@ -87,16 +119,16 @@ class App:
         self.repeat_box=ttk.Checkbutton(panel,text='自动连续挑战 · 不足分解 / 够用卖装 → 修理 → F10',variable=self.repeat)
         self.repeat_box.pack(anchor='w',pady=(10,0))
         self.dual_active=tk.BooleanVar(value=True)
-        self.dual_box=ttk.Checkbutton(panel,text='双刀当前已开（H 保持开启，不反复切换）',variable=self.dual_active)
+        self.dual_box=ttk.Checkbutton(panel,text='狂战士专用：双刀当前已开',variable=self.dual_active)
         self.dual_box.pack(anchor='w',pady=(4,0))
         self.preset_info=ttk.Label(panel,foreground='#5b6b80',wraplength=520)
         self.preset_info.pack(anchor='w',pady=(8,12));self.update_preset()
         self.status=tk.StringVar(value=STATES['ready'])
         statusbox=tk.Frame(panel,bg='white',padx=16,pady=16);statusbox.pack(fill='x')
         tk.Label(statusbox,textvariable=self.status,bg='white',fg='#183353',font=('Microsoft YaHei UI',13,'bold'),wraplength=480,anchor='w',justify='left').pack(fill='x')
-        self.metrics=tk.StringVar(value='角色：上头狂战    本轮房间：—    剩余怪物：—')
+        self.metrics=tk.StringVar(value=f'角色：{self.character_name.get()}    本轮房间：—    剩余怪物：—')
         tk.Label(statusbox,textvariable=self.metrics,bg='white',fg='#5b6b80',font=('Microsoft YaHei UI',10),anchor='w').pack(fill='x',pady=(10,0))
-        self.detail=tk.StringVar(value='全技能；血量低于 30% 才吃药；确认死亡按 X 复活。')
+        self.detail=tk.StringVar(value='全技能；血量低于 50% 才吃药；确认死亡按 X 复活。')
         ttk.Label(panel,textvariable=self.detail,foreground='#5b6b80',wraplength=520).pack(anchor='w',pady=(10,12))
         controls=ttk.Frame(panel);controls.pack(fill='x')
         self.start_btn=ttk.Button(controls,text='开始  F8',style='Start.TButton',command=self.start)
@@ -110,9 +142,9 @@ class App:
         for label,action in [('背包 I','inventory'),('核对库存','inspect_inventory'),('分解 Alt+D','disassemble'),('卖装 Alt+S','sell'),('修理 Alt+F','repair')]:
             button=ttk.Button(utility_row,text=label,command=lambda a=action:self.utility(a),width=10,padding=(3,8))
             button.pack(side='left',fill='x',expand=True,padx=2);self.utility_buttons.append(button)
-        entry_button=ttk.Button(panel,text='从根特入口进入所选副本并开始',command=lambda:self.start(enter=True))
+        entry_button=ttk.Button(panel,text='自动入场并开始（城镇入口附近 / 选图界面）',command=lambda:self.start(enter=True))
         entry_button.pack(fill='x',pady=(6,0));self.utility_buttons.append(entry_button)
-        ttk.Label(panel,text='在根特入口使用自动入场，或进图后点击开始；切出游戏暂停。\n追击歼灭战正在实测，默认只跑 1 局。重进使用 F10。',foreground='#5b6b80',wraplength=540).pack(anchor='w',pady=(12,14))
+        ttk.Label(panel,text='阿登高地已验证从时空海港入口附近自动进场；其他位置请先手动进图。\n角色下拉框选择脚本控制对象，不代替游戏登录换角色。',foreground='#5b6b80',wraplength=590).pack(anchor='w',pady=(12,14))
         doors=ttk.Frame(panel);doors.pack(fill='x')
         ttk.Label(doors,text='岔路选门').pack(side='left',padx=(0,8))
         self.door_buttons={}
@@ -122,6 +154,7 @@ class App:
         ttk.Label(panel,text='运行记录',font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w',pady=(16,6))
         self.history=tk.Text(panel,height=7,bg='white',fg='#33455c',font=('Microsoft YaHei UI',9),relief='flat',padx=10,pady=8,state='disabled')
         self.history.pack(fill='both',expand=True)
+        self.select_character()
         self.u=C.WinDLL('user32',use_last_error=True)
         self.u.RegisterHotKey.argtypes=[W.HWND,C.c_int,W.UINT,W.UINT]
         self.u.UnregisterHotKey.argtypes=[W.HWND,C.c_int]
@@ -138,6 +171,22 @@ class App:
     def update_preset(self):
         self.presets=json.loads((DATA/'presets.json').read_text(encoding='utf-8'))
         self.preset_info.configure(text=self.presets[self.selected.get()]['status'])
+    def select_character(self):
+        entry=next(c for c in self.characters if c['name']==self.character_name.get())
+        self.rotation.set(entry['rotation']);self.auto_potion.set(entry.get('auto_potion',False))
+        self.potion_box.configure(text=f"{entry.get('potion_key','3')} 已放血药（低于50%才用）")
+        if hasattr(self,'metrics'):self.metrics.set(f"角色：{entry['name']}    本轮房间：—    剩余怪物：—")
+    def read_character(self):
+        if self.alive():return
+        self.discover_button.configure(state='disabled')
+        def read():
+            try:self.messages.put({'state':'character_detected','character':discover_current()})
+            except Exception as exc:self.messages.put({'state':'character_read_failed','detail':str(exc)})
+        threading.Thread(target=read,daemon=True).start()
+    def configure_team(self):
+        if self.alive():return
+        from dungeon_farm.team_ui import configure,LABELS
+        configure(self.root,self.character_name.get(),lambda value:self.status.set('已保存：'+LABELS[value['mode']]))
     def hotkey_loop(self):
         registered=[]
         try:
@@ -161,9 +210,21 @@ class App:
             if not 0<=run_limit<=100:raise ValueError()
         except ValueError:
             self.status.set('局数请输入 0–100 的整数');return
-        (DATA/'gui-preferences.json').write_text(json.dumps({'dungeon':self.selected.get(),'difficulty':self.difficulty.get(),'runs':run_limit},ensure_ascii=False),encoding='utf8')
+        selected=next(c for c in self.characters if c['name']==self.character_name.get())
+        from dungeon_farm.team_ui import load_settings
+        from dungeon_farm.team_link import validate_config
+        try:
+            team_config=load_settings();validate_config(team_config,selected['name'])
+        except (ValueError,OSError) as exc:
+            self.status.set(str(exc));return
+        selected.update(rotation=self.rotation.get(),auto_potion=self.auto_potion.get())
+        save_characters(self.characters)
+        (DATA/'gui-preferences.json').write_text(json.dumps({'dungeon':self.selected.get(),'difficulty':self.difficulty.get(),'runs':run_limit,'character':selected['name']},ensure_ascii=False),encoding='utf8')
         self.update_preset()
         self.control=Control()
+        self.control.character=dict(selected);self.control.auto_potion=self.auto_potion.get()
+        self.control.team_config=team_config
+        if team_config.get('mode','solo')!='solo':self.solo.set(True)
         self.control.dual_blades_active=self.dual_active.get()
         self.worker=threading.Thread(target=run,args=(self.control,self.selected.get(),self.messages.put),kwargs={'solo':self.solo.get(),'repeat':self.repeat.get(),'difficulty':self.difficulty.get(),'allow_town_entry':enter,'max_runs':run_limit or None},daemon=False)
         self.maps.configure(state='disabled');self.mode.configure(state='disabled')
@@ -200,6 +261,18 @@ class App:
                 else:self.stop()
                 continue
             state=update['state']
+            if state in ('character_detected','character_read_failed'):
+                self.discover_button.configure(state='normal')
+                if state=='character_detected':
+                    found=update['character'];existing=next((c for c in self.characters if c['name']==found['name']),None)
+                    if existing:existing['role_type']=found['role_type']
+                    else:self.characters.append(found)
+                    save_characters(self.characters)
+                    self.character_box.configure(values=[c['name'] for c in self.characters])
+                    self.character_name.set(found['name']);self.select_character()
+                    self.status.set('已选择角色：'+found['name'])
+                else:self.status.set(update['detail'])
+                continue
             if state=='worker_ended':
                 result=update['result'];self.status.set(STATES.get(result,result))
                 self.metrics.set(f"本次已通关 {update.get('completed',0)} 局")
@@ -235,7 +308,13 @@ class App:
                 self.append(self.status.get());self.last_state=state
         if self.alive():self.pause_btn.configure(text='继续  F8' if self.control.paused.is_set() else '暂停  F8')
         for button in self.utility_buttons:button.configure(state='disabled' if self.alive() else 'normal')
-        self.dual_box.configure(state='disabled' if self.alive() else 'normal')
+        self.dual_box.configure(state='disabled' if self.alive() or self.rotation.get()!='狂战士' else 'normal')
+        self.character_box.configure(state='disabled' if self.alive() else 'readonly')
+        self.team_button.configure(state='disabled' if self.alive() else 'normal')
+        self.rotation_box.configure(state='disabled' if self.alive() else 'readonly')
+        self.potion_box.configure(state='disabled' if self.alive() else 'normal')
+        if self.alive():self.discover_button.configure(state='disabled')
+        elif str(self.start_btn['state'])=='normal':self.discover_button.configure(state='normal')
         self.difficulties.configure(state='disabled' if self.alive() else 'readonly')
         self.limits.configure(state='disabled' if self.alive() else 'normal')
         for d,b in self.door_buttons.items():b.configure(state='normal' if d in self.door_choices else 'disabled')

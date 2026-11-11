@@ -5,6 +5,7 @@ An empty enemy list alone is not evidence that a room has been cleared.
 """
 from dataclasses import dataclass
 from math import hypot, isfinite
+ENTRY_MODES=('entry_buff','entry_helper')
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,9 @@ class Skill:
     cube_cost: int | None = None  # Unknown costs are blocked, not assumed free.
     mode: str = 'attack'
     release_after: float = 0
+    name: str = ''
+    mp_cost: int = 0
+    input_sequence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,7 @@ class Decision:
     action: str | None = None
     reason: str = ''
     destination: tuple[float, float] | None = None
+    target_id: str | None = None
 
 
 class FarmPlanner:
@@ -68,7 +73,8 @@ class FarmPlanner:
                 raise ValueError('Invalid skill configuration')
         # Current verified berserker bindings only. Resource-cost annotations
         # alone must not accidentally enable a cube skill under an old key map.
-        self.skills = tuple(s for s in skills if (allow_all_skills and s.key in 'qwertyasdfgh') or (s.cube_cost == 0 and s.key in {'a', 's', 'q'}))
+        self.skills = tuple(sorted((s for s in skills if (allow_all_skills and (s.key in 'qwertyasdfgh' or (s.mode=='entry_helper' and s.key=='4') or (s.mode=='entry_buff' and s.input_sequence==('right','right','space')))) or (s.cube_cost == 0 and s.key in {'a', 's', 'q'})),key=lambda s:(s.cooldown,s.mp_cost,s.cube_cost or 0)))
+        self.entry_applied=set()
         self.toggle_active=set(toggle_active)
         self.releases={}
         self.attack_key = attack_key
@@ -82,6 +88,17 @@ class FarmPlanner:
         self.casting_until = 0.0
         self.in_results = False
         self.retry_sent = False
+
+    @property
+    def needs_entry_buff(self):
+        return any(s.mode in ENTRY_MODES and s.key not in self.entry_applied for s in self.skills)
+
+    def cancel_attack(self):
+        self.pending=None
+
+    def revived(self):
+        self.entry_applied.intersection_update(s.key for s in self.skills if s.mode=='entry_helper')
+        self.pending=None;self.casting_until=0
 
     @staticmethod
     def movement(position, target, tolerance=(12, 8)):
@@ -104,6 +121,7 @@ class FarmPlanner:
                 self.releases.pop(skill.key,None)
             else:
                 self.last_used[decision.tap] = now
+                if skill and skill.mode in ENTRY_MODES:self.entry_applied.add(skill.key)
                 if skill and skill.mode=='toggle':self.toggle_active.add(skill.key)
                 if skill and skill.mode=='awakening':self.releases[skill.key]=now+skill.release_after
             self.casting_until = now + (skill.cast_seconds if skill else .05)
@@ -150,9 +168,16 @@ class FarmPlanner:
             self.pending = None
         if now < self.ready_at:
             return Decision('loading', reason='等待新房间稳定')
-        if now < self.casting_until:
-            return Decision('casting')
         enemies = [e for e in obs.enemies if e.alive and isfinite(e.x) and isfinite(e.y)]
+        if not enemies and not self.needs_entry_buff:self.pending=None
+        if now < self.casting_until and (enemies or self.needs_entry_buff):
+            return Decision('casting')
+        entry=next((s for s in self.skills if s.mode in ENTRY_MODES and s.key not in self.entry_applied
+                    and now-self.last_used.get(s.key,float('-inf'))>=s.cooldown),None)
+        if entry:
+            self.pending=Decision(entry.mode,tap=entry.key,action=entry.mode,reason=entry.name)
+            return self.pending
+        if self.needs_entry_buff:return Decision('casting',reason='等待进图增益冷却')
         if enemies:
             self.clear_since = None
             # Finish anything already in melee range before chasing a slightly
@@ -170,7 +195,7 @@ class FarmPlanner:
             release=next((s for s in self.skills if s.key in self.releases and now>=self.releases[s.key]
                           and abs(dx)<=s.range_x and abs(dy)<=s.range_y),None)
             skill = next((s for s in self.skills if now-self.last_used.get(s.key, float('-inf')) >= s.cooldown
-                          and s.mode not in ('buff','toggle') and s.key not in self.releases
+                          and s.mode not in ('buff','toggle',*ENTRY_MODES) and s.key not in self.releases
                           and abs(dx) <= s.range_x and abs(dy) <= s.range_y), None)
             skill=release or skill
             if skill is None and (abs(dx) > 80 or abs(dy) > 8):
@@ -186,7 +211,7 @@ class FarmPlanner:
             key = skill.key if skill else self.attack_key
             if key == self.attack_key and now-self.last_used.get(key,float('-inf')) < .07:
                 return Decision('casting')
-            self.pending = Decision('combat', tap=key,action='release' if release else None)
+            self.pending = Decision('combat', tap=key,action='release' if release else None,target_id=enemy.identity)
             return self.pending
         if not obs.room_clear:
             self.clear_since = None
@@ -200,3 +225,13 @@ class FarmPlanner:
         if obs.exit_position is None or not all(isfinite(v) for v in obs.exit_position):
             return Decision('find_exit', reason='等待已确认的路线出口')
         return Decision('exit', self.movement(obs.position,obs.exit_position,(4,4)))
+
+
+def attack_still_valid(decision,obs,scene,skill=None):
+    """Recheck the selected target immediately before an attack key is sent."""
+    if not obs.perception_valid or obs.scene!=scene or obs.dead or obs.loading:return False
+    enemies=[e for e in obs.enemies if e.alive and (decision.target_id is None or e.identity==decision.target_id)]
+    if not enemies or obs.position is None:return False
+    if decision.action=='buff':return True
+    rx,ry=(skill.range_x,skill.range_y) if skill else (80,8)
+    return any(abs(e.x-obs.position[0])<=rx and abs(e.y-obs.position[1])<=ry for e in enemies)

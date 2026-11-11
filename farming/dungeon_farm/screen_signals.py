@@ -5,7 +5,8 @@ import cv2
 import numpy as np
 
 def normalize(text):
-    text=text.translate(str.maketrans({'無':'无','塊':'块'})).replace('追击开灭战','追击歼灭战').replace('菩通级','普通级')
+    text=text.translate(str.maketrans({'無':'无','塊':'块','決':'决','亞':'亚','頓':'顿','戰':'战','－':'-'})).replace('追击开灭战','追击歼灭战').replace('菩通级','普通级')
+    text=re.sub(r'决战的都市\s*-\s*亚顿','阿登高地',text)
     return re.sub(r'\s+','',text).lower().translate(str.maketrans({'戰':'战','擇':'择','選':'选','進':'进','鎮':'镇','驗':'验','勞':'劳','復':'复','幣':'币','東':'东','門':'门','級':'级','險':'险','裝':'装','備':'备','確':'确','認':'认','擊':'击','殲':'歼','滅':'灭','雄':'雄'}))
 
 def lifecycle_signals(found,dungeon='根特东门'):
@@ -110,6 +111,8 @@ class ScreenSignals:
             signals['inventory_digits']=number
         from dungeon_farm.resources import orb_fill
         signals.update(orb_fill(frame))
+        from dungeon_farm.minimap import read_minimap
+        signals['minimap']=read_minimap(frame,self.dungeon)
         # The selected card's tiny difficulty badge is missed by full-frame OCR.
         # Its position is relative to the recognized selected East Gate title.
         signals['difficulty']=None
@@ -129,11 +132,15 @@ class ScreenSignals:
                     # with OCR, and the old +20 left edge clipped 冒 in 冒险.
                     sy,sx=raw.shape[0]/480,raw.shape[1]/640
                     inner=raw[int((ay+36)*sy):int((ay+51)*sy),int((ax+10)*sx):int((ax+50)*sx)]
-                    recognized,_=self.ocr.text_rec([cv2.resize(inner,None,fx=6,fy=6,interpolation=cv2.INTER_NEAREST)],False)
+                    variants=[cv2.resize(inner,None,fx=6,fy=6,interpolation=cv2.INTER_NEAREST),
+                              cv2.resize(inner,None,fx=6,fy=6,interpolation=cv2.INTER_CUBIC)]
+                    recognized,_=self.ocr.text_rec(variants,False)
                     signals['difficulty_reading']=recognized
                     for text,score,*_ in recognized or []:
-                        value=normalize(text).replace('级','').replace('旨险','冒险')
-                        if float(score)>=.65 and value in ('普通','冒险','勇士','王者','英雄','地狱'):
+                        raw_value=normalize(text).replace('级','')
+                        value=raw_value.replace('旨险','冒险').replace('目险','冒险')
+                        threshold=.60 if raw_value=='目险' and self.dungeon=='阿登高地' else .65
+                        if float(score)>=threshold and value in ('普通','冒险','勇士','王者','英雄','地狱'):
                             signals['difficulty']=value
                 if signals['difficulty'] is not None:
                     # Only the highlighted dungeon card has this badge. Its
