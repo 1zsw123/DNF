@@ -12,6 +12,12 @@ from dungeon_farm.utilities import maintenance
 from dungeon_farm.characters import load_characters, save_characters, discover_current, ROTATIONS
 
 DATA=Path(__file__).resolve().parent
+
+def configure_changed(widget, **options):
+    """Unchanged ttk configure calls still schedule native redraws."""
+    changed={key:value for key,value in options.items() if str(widget.cget(key))!=str(value)}
+    if changed:widget.configure(**changed)
+
 STATES={
  'ready':'待启动','initializing':'正在准备识别与坐标连接…','waiting_game':'等待游戏启动',
  'waiting_foreground':'请切回游戏窗口，随后自动继续','waiting_coordinates':'正在连接角色坐标…',
@@ -364,19 +370,21 @@ class App:
                 self.door_choices=[]
             if state!=self.last_state and state not in ('casting','combat','approach','face_enemy'):
                 self.append(self.status.get());self.last_state=state
-        if self.alive():self.pause_btn.configure(text='继续  F8' if self.control.paused.is_set() else '暂停  F8')
-        for button in self.utility_buttons:button.configure(state='disabled' if self.alive() else 'normal')
-        self.dual_box.configure(state='disabled' if self.alive() or self.rotation.get()!='狂战士' else 'normal')
-        self.character_box.configure(state='disabled' if self.alive() else 'readonly')
-        self.team_button.configure(state='disabled' if self.alive() else 'normal')
-        self.supplies_button.configure(state='disabled' if self.alive() else 'normal')
-        self.rotation_box.configure(state='disabled' if self.alive() else 'readonly')
-        self.potion_box.configure(state='disabled' if self.alive() else 'normal')
-        if self.alive():self.discover_button.configure(state='disabled')
-        elif str(self.start_btn['state'])=='normal':self.discover_button.configure(state='normal')
-        self.difficulties.configure(state='disabled' if self.alive() else 'readonly')
-        self.limits.configure(state='disabled' if self.alive() else 'normal')
-        for d,b in self.door_buttons.items():b.configure(state='normal' if d in self.door_choices else 'disabled')
+        alive=self.alive()
+        if alive:configure_changed(self.pause_btn,text='继续  F8' if self.control.paused.is_set() else '暂停  F8')
+        for button in self.utility_buttons:configure_changed(button,state='disabled' if alive else 'normal')
+        configure_changed(self.dual_box,state='disabled' if alive or self.rotation.get()!='狂战士' else 'normal')
+        configure_changed(self.character_box,state='disabled' if alive else 'readonly')
+        configure_changed(self.team_button,state='disabled' if alive else 'normal')
+        configure_changed(self.supplies_button,state='disabled' if alive else 'normal')
+        configure_changed(self.rotation_box,state='disabled' if alive else 'readonly')
+        configure_changed(self.potion_box,state='disabled' if alive else 'normal')
+        if alive:configure_changed(self.discover_button,state='disabled')
+        elif str(self.start_btn['state'])=='normal':configure_changed(self.discover_button,state='normal')
+        from dungeon_farm.generic import GENERIC
+        configure_changed(self.difficulties,state='disabled' if alive or self.selected.get()==GENERIC else 'readonly')
+        configure_changed(self.limits,state='disabled' if alive else 'normal')
+        for d,b in self.door_buttons.items():configure_changed(b,state='normal' if d in self.door_choices else 'disabled')
         if self.closing and not self.alive():
             self.hotkey_stop.set();self.hotkey_thread.join(timeout=1)
             self.root.destroy();return

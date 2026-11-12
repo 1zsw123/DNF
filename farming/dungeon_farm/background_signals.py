@@ -20,11 +20,17 @@ class BackgroundSignals:
         try:
             screen = factory()
             while not self.stop.is_set() and not control.stop.is_set():
+                if control.paused.is_set():
+                    with self.lock:
+                        self.latest = None
+                    self.stop.wait(.08)
+                    continue
                 hwnd = win.game()
                 if not control.paused.is_set() and hwnd and win.foreground(hwnd):
                     started = time.monotonic()
                     value = screen.poll(win, hwnd, full=True)
-                    if value is not None and win.foreground(hwnd):
+                    if (value is not None and not control.paused.is_set()
+                            and not control.stop.is_set() and win.foreground(hwnd)):
                         with self.lock:
                             self.latest = (started, time.monotonic(), value)
                 self.stop.wait(.08)
