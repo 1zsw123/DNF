@@ -60,7 +60,7 @@
   "dungeon_farm/test_waves.py": "6e8a2bd7a5a9c31f0a3675eaf74414f3fa254f01ac9bfcfbb5dc6a1874027194",
   "dungeon_farm/presets.json": "c8f1c8a2c24c101a25b2bb3b3acc9f69e68bbd6be99e5940d9af0a5be1073190",
   "dungeon_farm/navigation-sources.md": "97279e5d6eec492b42d81cf9a2f4297aaa74b55e5f01eb428ffd28e3c358dbef",
-  "dungeon_farm/\u53cc\u673a\u7ec4\u961f\u4f7f\u7528\u8bf4\u660e.md": "3c7c7ec45be5627b0c0894b929f0ce4a317805dbdaa1078b6ded4e1e38e18f3b",
+  "dungeon_farm/\u53cc\u673a\u7ec4\u961f\u4f7f\u7528\u8bf4\u660e.md": "fe05ce5336c8e4f91c2a8c0def74368e5bb3077fdc8654b102ce14a6bd6dc7f5",
   "dungeon_farm/\u591a\u89d2\u8272\u4f7f\u7528\u8bf4\u660e.md": "4c01a0a654e8da9b39ee28399b8dc8987d291b11ea95a87bd7e720f6a8439c08",
   "dungeon_farm/\u5203\u5f71\u6280\u80fd\u8bf4\u660e.md": "655767451282c19335c519018a6ce5c019dcde03005598ae9ca4582d299d87db",
   "configure_farm.py": "73618fa06df7b8ea97abb85bc7c2b3201f8cce8048df00d3caee65919b95301b",
@@ -69,7 +69,7 @@
   "configure.cmd": "b905a1bd0ad1021d21217a46ecc9ed0fafd529cd7ae55682975f2858e961103b",
   "requirements.txt": "ee45c318932990dd6c5af783a4c6c8db6bfd47052f1f7c1abbdf8530c58427f2",
   ".gitignore": "5b9201c62d4c069295ecdf57acfdd141812a67a30b90421fc1f96236e016b209",
-  "README.md": "404a6185c2a5c5a315629c6188314ea0b96e52f160523cfc1aba90226c1dc606",
+  "README.md": "68e68703260c3b33b40ea3fc1f3461f182c4fdde7f1a207161187fd142f90c18",
   "ARCHITECTURE.md": "d1689698716d55e1c5ff6c47b073946a111b562fedad3d1286fefbe2fb6f2107",
   "TWO_CHARACTERS.md": "16fc52dfe0089fe2b6479d2df77d3d53ae091ea6cd12691b416cf2448e2ddbc5"
 }
