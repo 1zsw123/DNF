@@ -48,6 +48,7 @@ STATES={
  'wrong_dungeon':'未确认目标地图或难度，已停止，不启动战斗',
  'wrong_character':'游戏角色与所选方案不符，请点击“读取当前角色”',
  'waiting_dungeon':'请进目标副本，或使用自动入场按钮',
+ 'waiting_manual_entry':'通用模式待命：请手动进入要刷的副本',
  'difficulty_unconfirmed':'所选难度尚未确认，未发送入场键',
  'team_connecting':'正在建立双机组队连接',
  'waiting_partner':'等待队友连接或靠近门口',
@@ -182,6 +183,12 @@ class App:
     def update_preset(self):
         self.presets=json.loads((DATA/'presets.json').read_text(encoding='utf-8'))
         self.preset_info.configure(text=self.presets[self.selected.get()]['status'])
+        from dungeon_farm.generic import GENERIC
+        if self.selected.get()==GENERIC:
+            self.difficulty.set('沿用手动选择');self.difficulties.configure(state='disabled')
+        else:
+            if self.difficulty.get()=='沿用手动选择':self.difficulty.set('冒险级')
+            self.difficulties.configure(state='readonly')
     def select_character(self):
         entry=next(c for c in self.characters if c['name']==self.character_name.get())
         self.rotation.set(entry['rotation']);self.auto_potion.set(entry.get('auto_potion',False))
@@ -244,6 +251,8 @@ class App:
     def alive(self): return self.worker is not None and self.worker.is_alive()
     def start(self,enter=False):
         if self.alive():return
+        from dungeon_farm.generic import GENERIC
+        if self.selected.get()==GENERIC:enter=False
         try:
             run_limit=int(self.run_limit.get())
             if not 0<=run_limit<=100:raise ValueError()

@@ -3,6 +3,25 @@ from dungeon_farm.navigation import Navigator
 
 
 class NavigationTests(unittest.TestCase):
+    def test_portal_avoidance_leaves_entry_without_a_fixed_interior_waypoint(self):
+        n=Navigator()
+        move=n.steer('room',(500,210),(900,300),0,avoid=((500,200),))
+        self.assertNotIn('up',move)
+        self.assertTrue(move);self.assertFalse(n.no_path)
+        self.assertEqual(n.goal,n.node((900,300)))
+
+    def test_half_cell_coordinates_keep_one_cell_translation(self):
+        n=Navigator()
+        for y in range(-70,751,20):
+            self.assertEqual(n.node((1183,y-20))[1],n.node((1183,y))[1]-1)
+
+    def test_observed_dark_city_pit_stall_records_forward_cell_not_own_floor(self):
+        n=Navigator();position=(1183,730)
+        n.steer('pit',position,(1183,394),0)
+        n.steer('pit',position,(1183,394),.6)
+        self.assertIn((59,36),n.contacts)
+        self.assertNotIn(n.node(position),n.contacts)
+
     def test_retreat_routes_around_enemy_instead_of_through_it(self):
         n=Navigator();move=n.steer('r',(100,240),(500,240),0,avoid=((300,240),),floor_bounds=(120,360))
         self.assertTrue({'up','down'}&move)

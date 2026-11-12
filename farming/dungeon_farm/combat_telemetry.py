@@ -68,7 +68,7 @@ def connect_solo(pid, profile):
     return SoloReader(connect_verified(pid, profile))
 
 
-def observe(connection, pid, facing=None, allowed_types=None, allowed_apcs=None, friendly_apcs=None, friendly_monsters=None, ignore_unknown=False):
+def observe(connection, pid, facing=None, allowed_types=None, allowed_apcs=None, friendly_apcs=None, friendly_monsters=None, ignore_unknown=False, generic_monsters=False):
     sample = connection.sample(pid)
     if not sample:
         return None
@@ -105,7 +105,7 @@ def observe(connection, pid, facing=None, allowed_types=None, allowed_apcs=None,
                 rawname=reader.process.read(ptr,96) if ptr else None
                 name=rawname.decode('utf-16le',errors='replace').split('\0',1)[0] if rawname else ''
                 if name in friendly_monsters[vt-reader.delta]:continue
-            recognized=vt-reader.delta in (FIRST_ROOM_TYPES if allowed_types is None else allowed_types)
+            recognized=(generic_monsters and 0x400000<=vt-reader.delta<0x4000000) or vt-reader.delta in (FIRST_ROOM_TYPES if allowed_types is None else allowed_types)
         if not recognized:
             unknown.add(hex(vt-reader.delta))
             ptr=struct.unpack_from('<I',raw,0x258)[0]

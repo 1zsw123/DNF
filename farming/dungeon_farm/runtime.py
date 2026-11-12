@@ -23,10 +23,11 @@ from dungeon_farm.revival import Revival
 from dungeon_farm.door_approach import DoorApproach
 from dungeon_farm.characters import selected_profile, character_planner
 from dungeon_farm.minimap import MinimapRoute,MinimapSignals
+from dungeon_farm.generic import GENERIC,combined_preset,boss_heading
 
 ROOT=Path(__file__).resolve().parents[1]
 DATA=ROOT/'dungeon_farm'
-SUPPORTED_DUNGEONS=('根特东门','追击歼灭战','阿登高地')
+SUPPORTED_DUNGEONS=('根特东门','追击歼灭战','阿登高地',GENERIC)
 
 class Control:
     def __init__(self):
@@ -50,10 +51,13 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
     control.round_cube_upper=0
     recovery_budget=RecoveryBudget(limit=1)
     presets=json.loads((DATA/'presets.json').read_text(encoding='utf-8'))
+    generic=dungeon==GENERIC
+    use_minimap=dungeon in ('阿登高地',GENERIC)
     team_mode=control.team_config.get('mode','solo')
     from dungeon_farm.team import follower_scene_preset
     actual_dungeon=None if team_mode=='follower' else dungeon
-    preset=follower_scene_preset(presets,'')[1] if team_mode=='follower' else presets[dungeon]
+    if generic:actual_dungeon=follower_scene_preset(presets,getattr(control,'generic_title',''))[0]
+    preset=follower_scene_preset(presets,'')[1] if team_mode=='follower' else (combined_preset(presets) if generic else presets[dungeon])
     allowed={int(v,16) for v in preset['monster_types']}
     apcs={int(v,16):names for v,names in preset.get('apc_targets',{}).items()}
     friends={int(v,16):names for v,names in preset.get('friendly_apcs',{}).items()}
@@ -74,7 +78,7 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
     doors=[];next_exit=None;exiting=None;destination=None;last_status=0;door_approach=DoorApproach()
     started=time.monotonic();manual_until=0;screen_checks=0;outcome='stopped'
     last_sample=None;last_obs=None;battle_started=None;resources=None;resources_time=0
-    minimap_route=MinimapRoute();minimap=None;minimap_time=0
+    minimap_route=MinimapRoute(incremental=generic);minimap=None;minimap_time=0
     map_screen=None;map_signals={}
     lost_since=None;screen_epoch=time.monotonic();last_screen=0;revival=Revival()
     ignored_objects=set();was_retreat=False;resource_overlay=False
@@ -90,7 +94,7 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
     try:
         emit('initializing',True)
         screen=BackgroundSignals(win,control,factory=lambda:ScreenSignals(dungeon))
-        if dungeon=='阿登高地' and team_mode!='follower':
+        if use_minimap and team_mode!='follower':
             map_screen=BackgroundSignals(win,control,factory=lambda:MinimapSignals(dungeon))
         win.u.GetAsyncKeyState(0x1b);win.u.GetAsyncKeyState(0x0d)
         while not control.stop.is_set() and (battle_started is None or time.monotonic()-battle_started<limit):
@@ -121,6 +125,8 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
             if screen_value and screen_value[0]>last_screen:
                 last_screen,_,signals=screen_value
                 resource_overlay=bool(signals.get('overlay'))
+                if generic and signals.get('map_title'):
+                    actual_dungeon=follower_scene_preset(presets,signals['map_title'])[0]
                 if team_mode=='follower' and signals.get('map_title'):
                     detected,current=follower_scene_preset(presets,signals['map_title'])
                     if detected!=actual_dungeon:
@@ -158,7 +164,7 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 if not resource_overlay and map_signals.get('resources'):
                     resources=map_signals['resources'];resources_time=minimap_time
             pid=W.DWORD();win.u.GetWindowThreadProcessId(hwnd,C.byref(pid))
-            value=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons,ignore_unknown=team_mode!='follower')
+            value=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons,ignore_unknown=team_mode!='follower',generic_monsters=generic)
             if value is None:
                 if last_sample and connection.reader:
                     reader=connection.reader;base=reader.uint(reader.local_root)
@@ -190,7 +196,7 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 win.release()
                 resources=None;resources_time=0;screen_epoch=time.monotonic()
                 minimap=None;minimap_time=0
-                new_doors=read_doors(connection.reader,sample['scene'],dungeon)
+                new_doors=read_doors(connection.reader,sample['scene'],actual_dungeon)
                 if previous_obs and doors and explorer.pending:
                     import math
                     crossed=min(doors,key=lambda d:math.dist(previous_obs.position,(d['x'],d['y'])))
@@ -198,6 +204,7 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                         explorer.pending=(explorer.pending[0],crossed['direction'])
                 entry=OPPOSITE[exiting['direction']] if exiting else infer_entry(new_doors,obs.position)
                 if explorer.pending:entry=OPPOSITE[explorer.pending[1]]
+                if generic and room is None:entry=None
                 minimap_route.enter(obs.scene,OPPOSITE.get(entry) if room is not None else None)
                 # Starting/restarting in the middle of a room does not prove
                 # the nearest door was our entrance. Only transitions prove it.
@@ -207,13 +214,13 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 door_approach=DoorApproach()
                 waves.reset();facing=None;nav.reset(room)
                 emit('room_entered',True,doors=[d['direction'] for d in doors])
-            if dungeon=='阿登高地' and team_mode!='follower':
+            if use_minimap and team_mode!='follower':
                 reading=minimap if time.monotonic()-minimap_time<3 else None
                 planned=minimap_route.choose(room,doors,reading,minimap_time,validate_doors=False)
                 if planned!=next_exit:
                     next_exit=planned
                     if planned:emit('boss_route',True,detail='已记住本房出口：'+planned['direction'],path=minimap_route.path)
-            obs=replace(obs,boss_room=(dungeon=='阿登高地' and team_mode!='follower'
+            obs=replace(obs,boss_room=(use_minimap and team_mode!='follower'
                                      and minimap_route.status=='at_boss'),
                         mp_fill=resources.get('mp_fill') if resources and time.monotonic()-resources_time<2 else None)
             if control.auto_potion and time.monotonic()>=control.next_recovery and recovery_budget.available(resources,time.monotonic()-resources_time):
@@ -268,13 +275,13 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 if not exit_ready:
                     decision=Decision('confirm_clear')
                 else:
-                    if dungeon=='阿登高地':
-                        doors=read_doors(connection.reader,sample['scene'],dungeon)
+                    if use_minimap:
+                        doors=read_doors(connection.reader,sample['scene'],actual_dungeon)
                         next_exit=minimap_route.choose(room,doors)
                     if next_exit is None:
                         # Door objects may still be initializing on scene entry.
-                        doors=read_doors(connection.reader,sample['scene'],dungeon)
-                        if dungeon=='阿登高地':
+                        doors=read_doors(connection.reader,sample['scene'],actual_dungeon)
+                        if use_minimap:
                             reading=minimap if time.monotonic()-minimap_time<3 else None
                             next_exit=minimap_route.choose(room,doors,reading,minimap_time)
                             if next_exit:
@@ -283,6 +290,8 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                             preferred=configured_door(doors,entry,preset.get('route_rules',[]))
                             priority=preferred['direction'] if preferred else ('right' if dungeon=='追击歼灭战' else None)
                             next_exit=explorer.choose(doors,priority) if dungeon in SUPPORTED_DUNGEONS else onward_door(doors,entry)
+                    if generic and next_exit is None and minimap_route.status!='at_boss':
+                        next_exit=explorer.choose(doors,boss_heading(minimap_route,doors))
                     if control.exit_choice:
                         matches=[d for d in doors if d['direction']==control.exit_choice]
                         control.exit_choice=None
@@ -294,7 +303,7 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                             control.paused.set()
                             emit('minimap_timeout',True,detail='清场确认已达10秒，小地图位置或连线仍未确认；已暂停')
                             continue
-                        if dungeon=='阿登高地':emit('waiting_boss_result' if minimap_route.status=='at_boss' else 'waiting_minimap',detail=minimap_route.status,doors=[d['direction'] for d in doors])
+                        if use_minimap:emit('waiting_boss_result' if minimap_route.status=='at_boss' else 'waiting_minimap',detail=minimap_route.status,doors=[d['direction'] for d in doors])
                         else:emit('choose_exit',doors=[d['direction'] for d in doors])
                         control.stop.wait(.05);continue
                     exiting=next_exit
@@ -302,12 +311,18 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                         win.release();nav.pause();emit('waiting_partner',detail='清场后等待小号靠近，再一起过门')
                         control.stop.wait(.05);continue
                     explorer.departing(exiting['direction'])
-                    destination=door_approach.target(exiting,obs.position,doors)
+                    # Fixed inward/lateral escape waypoints can land inside a
+                    # pit on an unfamiliar map. Generic mode instead assigns
+                    # navigation costs around other portals below.
+                    approach_doors=[] if generic else doors
+                    destination=door_approach.target(exiting,obs.position,approach_doors)
                     decision=Decision('exit',destination=destination)
             if decision.destination is not None:
                 retreat_options=({'avoid':[(e.x,e.y) for e in obs.enemies if e.alive],
                                   'floor_bounds':getattr(planner,'floor_bounds',None),'urgent':True}
                                  if decision.action=='retreat' else {})
+                if generic and decision.state=='exit':
+                    retreat_options={'avoid':[(d['x'],d['y']) for d in doors if d!=exiting]}
                 portal_move=door_approach.portal_push(obs.position,decision.destination) if decision.state=='exit' else None
                 if portal_move is not None:
                     # The trigger extends beyond the walkable edge. Learning
@@ -326,7 +341,7 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                       'actual_dungeon':actual_dungeon,'peer_phase':remote.get('phase') if remote else None,
                       'peer_active':remote.get('active') if remote else None,
                       'wave':waves.number,'doors':doors,'boss_room':obs.boss_room,'g_confirmed':obs.g_confirmed,'mp_fill':obs.mp_fill,
-                      'minimap':minimap,'destination':decision.destination,
+                      'minimap':minimap,'map_diagnostic':map_signals.get('diagnostic') if generic else None,'destination':decision.destination,
                       'remembered_route':minimap_route.path,'planned_exit':next_exit['direction'] if next_exit else None,
                       'move':sorted(decision.move),'collisions':nav.collisions},ensure_ascii=False)+'\n')
             log.flush()
@@ -335,7 +350,7 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 was_retreat=False
                 skill=next((s for s in planner.skills if s.key==decision.tap),None)
                 if decision.action not in ('entry_buff','entry_helper'):
-                    fresh=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons,ignore_unknown=team_mode!='follower')
+                    fresh=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons,ignore_unknown=team_mode!='follower',generic_monsters=generic)
                     if fresh is None or not attack_still_valid(decision,fresh[0],room,skill,planner.attack_range):
                         planner.cancel_attack();win.release();continue
                 success=keys.cast(skill,hwnd,control.cancelled) if skill else keys.tap(decision.tap,hwnd,control.cancelled)
@@ -383,6 +398,10 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
 def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普通级',allow_town_entry=False,max_runs=None):
     from dungeon_farm.cycle import replay
     from dungeon_farm.town_entry import prepare
+    generic=dungeon==GENERIC
+    if generic:
+        from dungeon_farm.generic import prepare
+        allow_town_entry=False
     completed=0;outcome='stopped';control.difficulty=difficulty
     def emit(update):
         report({'completed':completed,'repeat':repeat,**update})
@@ -390,7 +409,7 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
             (DATA/'cycle-status.json').write_text(json.dumps({'result':'running','phase':update['state'],
                 'completed':completed,'repeat':repeat,'updated':time.time()},ensure_ascii=False,indent=2),encoding='utf-8')
     try:
-        if difficulty not in ('普通级','冒险级','勇士级'):
+        if not generic and difficulty not in ('普通级','冒险级','勇士级'):
             raise ValueError('当前开放普通、冒险、勇士级；不自动提高所选难度')
         if repeat and (dungeon not in SUPPORTED_DUNGEONS or not solo):
             raise ValueError('循环模式仅支持已配置的单人副本')
@@ -403,6 +422,8 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
                 emit({'state':outcome,'detail':f"游戏：{current['name']}；所选：{control.character['name']}。请读取当前角色后再开始。"})
                 return
         team_mode=control.team_config.get('mode','solo')
+        if generic and (team_mode!='solo' or not solo):
+            raise ValueError('通用模式请使用单人模式，由你手动选择副本和难度')
         if team_mode!='solo':
             from dungeon_farm.team_link import TeamLink
             if not solo:raise ValueError('组队联动需要本机角色读取模式')
@@ -421,7 +442,7 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
             if dungeon in SUPPORTED_DUNGEONS and team_mode!='follower':
                 outcome=prepare(control,emit,allow_town_entry=allow_town_entry,dungeon=dungeon,difficulty=difficulty)
                 while outcome=='waiting_dungeon' and not control.stop.is_set():
-                    emit({'state':'waiting_dungeon'})
+                    emit({'state':'waiting_manual_entry' if generic else 'waiting_dungeon'})
                     control.stop.wait(1)
                     if not control.stop.is_set():
                         outcome=prepare(control,emit,allow_town_entry=False,dungeon=dungeon,difficulty=difficulty)
@@ -430,6 +451,10 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
                 if outcome!='ready':break
             result=run_round(control,dungeon,emit,solo,limit)
             outcome=result['result']
+            if generic and outcome=='returned_town':
+                control.exit_choice=None
+                emit({'state':'waiting_manual_entry'})
+                continue
             if outcome!='finished':break
             completed+=1
             again=repeat and (max_runs is None or completed<max_runs)
@@ -445,7 +470,7 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
             if (DATA/'gui-run.jsonl').exists():shutil.copyfile(DATA/'gui-run.jsonl',archive/f'{int(round_start)}.jsonl')
             if not again:break
             if outcome=='town_reentry' and team_mode=='solo':
-                allow_town_entry=True;control.exit_choice=None
+                allow_town_entry=not generic;control.exit_choice=None
                 continue
             if outcome!='reentered':break
             control.exit_choice=None

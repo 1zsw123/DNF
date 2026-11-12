@@ -36,6 +36,8 @@ class MinimapSignals:
 
 
 def read_minimap(frame,dungeon,debug=None):
+    from dungeon_farm.generic import GENERIC
+    if dungeon==GENERIC:return read_generic_minimap(frame,debug)
     if dungeon!='阿登高地' or frame.shape[:2]!=(480,640):return None
     hsv=cv2.cvtColor(frame,cv2.COLOR_BGR2HSV)
     h,s,v=cv2.split(hsv)
@@ -84,6 +86,78 @@ def read_minimap(frame,dungeon,debug=None):
     return {'current':current,'boss':boss,'rooms':sorted(rooms),'edges':edges,'path':path,'source':source}
 
 
+def read_generic_minimap(frame,debug=None):
+    """Find the client's room grid around its player marker, without map assets.
+
+    Only visible connectors create edges. Incomplete/fogged graphs are useful
+    hints; the runtime explores actual doors when the Boss path is unavailable.
+    """
+    if frame.shape[:2]!=(480,640):return None
+    b,g,r=(a.astype(float) for a in cv2.split(frame))
+    hsv=cv2.cvtColor(frame,cv2.COLOR_BGR2HSV);h,s,v=cv2.split(hsv)
+    blue=(h>=85)&(h<=125)&(s>80)&(v>35)
+    glow=(b>170)&(g<b*.8)&(r<b*.4)
+    red=((h<20)|(h>170))&(s>140)&(v>100)
+    corridor=(b>65)&(g>b*.58)&(r>b*.24)&(b>r*1.25)
+    # Locate the HUD's bronze rectangular bottom/side borders before looking
+    # for icons. World scenery shining through outside the minimap must not
+    # become a second player marker on the same lattice.
+    border=(r>g*1.1)&(g>b*1.1)&(v>35)&(v<190)&(s>35)&(h<40)
+    boxes=[]
+    for bottom in range(45,185):
+        pixels=np.flatnonzero(border[bottom,470:639])+470
+        for line in np.split(pixels,np.flatnonzero(np.diff(pixels)>1)+1):
+            if len(line)<40 or line[-1]<630:continue
+            left,right=int(line[0]),int(line[-1])
+            support=float(border[30:bottom,left].mean())
+            if support>.45:boxes.append((support,left+2,28,right-1,bottom-1))
+    if not boxes:
+        if debug is not None:debug.update(reason='minimap_border_unconfirmed')
+        return None
+    _,xmin,ymin,xmax,ymax=max(boxes)
+    region=np.zeros((480,640),np.uint8);region[ymin:ymax,xmin:xmax]=glow[ymin:ymax,xmin:xmax]
+    count,labels,stats,centers=cv2.connectedComponentsWithStats(region,8)
+    candidates=[centers[i] for i in range(1,count) if 3<=stats[i,cv2.CC_STAT_AREA]<=40
+                and stats[i,cv2.CC_STAT_WIDTH]<=9 and stats[i,cv2.CC_STAT_HEIGHT]<=9]
+    if debug is not None:debug.update(marker_candidates=len(candidates),bounds=[xmin,ymin,xmax,ymax])
+    if len(candidates)>12:return None
+    results=[]
+    for px,py in candidates:
+        rooms=set();bosses=[];players=[];points={}
+        # 640x480 normalized HUD uses approximately 14.5px tile spacing.
+        # Absolute tile coordinates keep room identity stable as the player
+        # moves; no per-dungeon origin, Boss location or fixed route is used.
+        origin=(round(px/14.5),round(py/14.5))
+        for dy in range(-11,12):
+            for dx in range(-11,12):
+                x,y=round(px+14.5*dx),round(py+14.5*dy)
+                if not (xmin+3<=x<xmax-3 and ymin+3<=y<ymax-3):continue
+                patch=np.s_[y-3:y+4,x-3:x+4];tile=(origin[0]+dx,origin[1]+dy)
+                if float(blue[patch].mean())>.6:rooms.add(tile)
+                if int(glow[patch].sum())>=3:players.append(tile)
+                if int(red[patch].sum())>=12:bosses.append(tile)
+                points[tile]=(x,y)
+        if len(players)!=1 or len(bosses)!=1:continue
+        current,boss=players[0],bosses[0]
+        # Fog can hide every room except the two HUD icons. Keep only the
+        # observed locations then; do not invent the corridors between them.
+        if current==boss or abs(current[0]-boss[0])+abs(current[1]-boss[1])>14:continue
+        rooms.update((current,boss));edges=[]
+        for a in sorted(rooms):
+            for dx,dy in ((1,0),(0,1)):
+                other=(a[0]+dx,a[1]+dy)
+                if other not in rooms:continue
+                x,y=(round((points[a][i]+points[other][i])/2) for i in (0,1))
+                patch=corridor[y-3:y+4,x-1:x+2] if dx else corridor[y-1:y+2,x-3:x+4]
+                middle=corridor[y-3:y+4,x] if dx else corridor[y,x-3:x+4]
+                if int(patch.sum())>=6 and int(middle.sum())>=2:edges.append([a,other])
+        results.append({'current':current,'boss':boss,'rooms':sorted(rooms),'edges':edges,
+                        'path':shortest_path(current,boss,edges),'source':'generic_visible'})
+    unique={str((r['current'],r['boss'],r['rooms'])):r for r in results}
+    if debug is not None:debug.update(marker_candidates=len(candidates),grids=len(unique))
+    return next(iter(unique.values())) if len(unique)==1 else None
+
+
 def shortest_path(start,goal,edges,blocked=()):
     start,goal=tuple(start),tuple(goal)
     graph={};blocked={frozenset((tuple(a),tuple(b))) for a,b in blocked}
@@ -101,7 +175,8 @@ def shortest_path(start,goal,edges,blocked=()):
 
 
 class MinimapRoute:
-    def __init__(self):
+    def __init__(self,incremental=False):
+        self.incremental=incremental
         self.scene=None;self.signature=None;self.stamp=None;self.confirmations=0
         self.status='waiting';self.path=None
         self.blocked=set()
@@ -140,6 +215,13 @@ class MinimapRoute:
         self.current=tuple(reading['current']);self.boss=tuple(reading['boss'])
         self.locations[scene]=self.current
         if self.edges is None:self.edges=[(tuple(a),tuple(b)) for a,b in reading['edges']]
+        elif self.incremental:
+            # Newly revealed corridors extend the graph; transient fog never
+            # erases it, and missing actual doors still veto candidate edges.
+            known={frozenset(e) for e in self.edges}
+            for a,b in reading['edges']:
+                edge=(tuple(a),tuple(b))
+                if frozenset(edge) not in known:self.edges.append(edge);known.add(frozenset(edge))
         self._plan()
         return True
 

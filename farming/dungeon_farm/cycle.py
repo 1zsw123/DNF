@@ -9,6 +9,7 @@ from dungeon_farm.combat_telemetry import connect_solo
 from dungeon_farm.route import read_doors
 from dungeon_farm.screen_signals import ScreenSignals
 from dungeon_farm.cycle_inputs import CycleInputs
+from dungeon_farm.generic import GENERIC,room_ready
 
 DATA=Path(__file__).resolve().parent
 
@@ -39,6 +40,7 @@ def dungeon_difficulty(signals,dungeon='根特东门'):
 
 def fresh_dungeon_room(signals,sample,old_scene,doors,difficulty='普通级',dungeon='根特东门',allow_hidden_difficulty=False):
     """Ghent's start side varies; verify the dungeon, not one doorway layout."""
+    if dungeon==GENERIC:return room_ready(signals,sample,doors,old_scene)
     from dungeon_farm.screen_signals import normalize
     text=''.join(normalize(t) for t in signals.get('texts',[]))
     observed=dungeon_difficulty(signals,dungeon)
@@ -166,12 +168,17 @@ def replay(control,report,old_scene,profile,dungeon='根特东门',reenter=True)
                         report({'state':'waiting_partner_ready'})
                         control.stop.wait(.1);continue
                     link.update(phase='entering')
-                event('retrying',key='F10',difficulty=expected_difficulty or '普通级')
+                event('retrying',key='F10',difficulty='沿用手动选择' if dungeon==GENERIC else (expected_difficulty or '普通级'))
                 if keys.key('retry',hwnd,control.cancelled):plan.acknowledge(action,time.monotonic())
                 continue
             if plan.stage=='wait_entry':
                 pid=W.DWORD();win.u.GetWindowThreadProcessId(hwnd,C.byref(pid))
                 sample=connection.sample(pid.value)
+                if dungeon==GENERIC and not sample and now-plan.sent_at>=3 and connection.reader:
+                    reader=connection.reader;base=reader.uint(reader.local_root)
+                    actor=reader.actor(base,0) if base and reader.uint(base+0xb8)==0 else None
+                    if actor and actor['name']==profile['self_name']:
+                        event('town_reentry');return 'town_reentry'
                 if (team_mode=='solo' and dungeon=='阿登高地' and now-plan.sent_at>=3
                         and not sample and verified_arden_town(signals,connection.reader,profile)):
                     event('town_reentry');return 'town_reentry'

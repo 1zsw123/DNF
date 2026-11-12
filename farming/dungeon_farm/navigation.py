@@ -36,7 +36,10 @@ class Navigator:
         self.temporary_contacts={}
 
     def node(self, p):
-        return tuple(round(v/self.cell) for v in p)
+        # Banker's rounding maps BOTH y=730 and y=710 to row 36. A blocked
+        # northward step then records the actor's own free cell, never a wall.
+        # Half-up is translation-invariant across one-cell movements.
+        return tuple(math.floor(v/self.cell+.5) for v in p)
 
     def point(self, n):
         return tuple(v*self.cell for v in n)
@@ -155,6 +158,10 @@ class Navigator:
                 length=math.hypot(dx,dy)
                 ahead=self.node((position[0]+dx/length*self.cell,
                                  position[1]+dy/length*self.cell))
+                if ahead==here:
+                    # A diagonal probe may remain inside the same coarse cell
+                    # when starting near a corner. Record its dominant edge.
+                    ahead=(here[0]+(1 if dx>0 else -1),here[1]) if abs(dx)>abs(dy) else (here[0],here[1]+(1 if dy>0 else -1))
                 # Learn the immediate blocked cell, not the distant goal.
                 # A one-cell fringe avoids repeatedly hitting the same face.
                 learned={ahead}

@@ -4,6 +4,19 @@ from dungeon_farm.exploration import RoomExplorer
 def doors(*names):return [{'direction':name,'x':0,'y':0} for name in names]
 
 class ExplorationTests(unittest.TestCase):
+    def test_accidental_return_revisits_unfinished_branch_instead_of_abandoning_it(self):
+        e=RoomExplorer();e.enter('start',None)
+        e.choose(doors('up','down'));e.departing('up');e.enter('north','down')
+        e.choose(doors('right','down'));e.departing('right');e.enter('corner','left')
+        e.choose(doors('left','down'));e.departing('down');e.enter('unfinished','up')
+        self.assertEqual(e.choose(doors('right','up','down'),'right')['direction'],'right')
+        # The observed transition went through the north entrance, despite
+        # the pending eastward destination; runtime supplies the actual edge.
+        e.departing('up');e.enter('corner','down')
+        self.assertEqual(e.choose(doors('left','down'))['direction'],'down')
+        e.departing('down');e.enter('unfinished','up')
+        self.assertEqual(e.choose(doors('right','up','down'),'right')['direction'],'right')
+
     def test_verified_preference_does_not_revisit_a_used_exit(self):
         e=RoomExplorer();e.enter('fork',None)
         self.assertEqual(e.choose(doors('left','up','right'),'up')['direction'],'up')
