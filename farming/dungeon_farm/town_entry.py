@@ -11,6 +11,24 @@ from dungeon_farm.cycle import fresh_dungeon_room,dungeon_difficulty
 from dungeon_farm.route import read_doors
 from dungeon_farm.revival import Revival
 
+class EntranceAlignment:
+    """Bounded vertical probes only after a rightward town step did not move."""
+    def __init__(self):
+        self.previous=None;self.last='right';self.probes=0
+
+    def direction(self,position):
+        import math
+        if not position or not all(math.isfinite(v) for v in position[:2]):
+            return 'right'
+        stalled=(self.previous is not None and self.last=='right'
+                 and abs(position[0]-self.previous[0])<4)
+        direction='right'
+        if stalled and self.probes<3:
+            direction='up' if self.probes==0 else 'down'
+            self.probes+=1
+        self.previous=tuple(position);self.last=direction
+        return direction
+
 def prepare(control,report,allow_town_entry=False,dungeon='根特东门',difficulty='普通级'):
     root=Path(__file__).resolve().parents[1]
     from dungeon_farm.characters import selected_profile
@@ -19,6 +37,8 @@ def prepare(control,report,allow_town_entry=False,dungeon='根特东门',difficu
     win.u.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)]
     conn=CoordinateConnection(profile,connector=connect_solo)
     selected=False;selection_seen=False;normal_steps=0;normal_confirmations=0;select_attempts=0;enter_sent=False;moves=0;active=0;last=time.monotonic();unconfirmed=0;revival=Revival();selection_requested=False
+    alignment=EntranceAlignment()
+    overlay_closes=0
     try:
         while not control.stop.is_set():
             now=time.monotonic();dt=now-last;last=now;hwnd=win.game()
@@ -36,6 +56,14 @@ def prepare(control,report,allow_town_entry=False,dungeon='根特东门',difficu
             if not signals:control.stop.wait(.06);continue
             (Path(__file__).parent/'entry-observation.json').write_text(json.dumps({'time':time.time(),'signals':signals,'selected':selected,'enter_sent':enter_sent},ensure_ascii=False,indent=2),encoding='utf8')
             if signals['exhausted']:return 'fatigue_empty'
+            if signals.get('overlay') and not sample and not signals['selection']:
+                # Inventory inspection can leave its panel open when the
+                # client's input poll misses the closing I key. Confirm its
+                # presence before each bounded retry; never move underneath it.
+                if overlay_closes>=2:return 'entry_failed'
+                if keys.key('inventory',hwnd,control.cancelled):overlay_closes+=1
+                control.stop.wait(.6)
+                continue
             if signals.get('finished'):
                 if not allow_town_entry:return 'waiting_dungeon'
                 if not selection_requested and signals.get('retry'):
@@ -122,7 +150,10 @@ def prepare(control,report,allow_town_entry=False,dungeon='根特东门',difficu
                 report({'state':'waiting_coordinates'});continue
             if moves>=8:return 'entry_failed'
             report({'state':'entering_town'})
-            win.apply({'right'},hwnd)
+            direction='right'
+            if dungeon=='阿登高地' and any(t in signals.get('map_title','') for t in ('悬空的海港','时空海港')):
+                direction=alignment.direction(reader.process.xyz(reader.local_xyz))
+            win.apply({direction},hwnd)
             try:
                 until=time.monotonic()+.4
                 while time.monotonic()<until and not control.cancelled() and win.foreground(hwnd):control.stop.wait(.02)

@@ -43,6 +43,12 @@ def cube_quantity(texts,digits):
     agreed=[n for n,votes_for_n in votes.items() if votes_for_n>=2]
     return agreed[0] if len(agreed)==1 else None
 
+def material_cell(character):
+    row=(character or {}).get('cube_row',1);column=(character or {}).get('cube_column',1)
+    if type(row) is not int or type(column) is not int or not (1<=row<=6 and 1<=column<=8):
+        raise ValueError('无色位置须为材料栏第1–6行、第1–8列')
+    return row,column
+
 def inspect_inventory(win,keys,screen,hwnd,control):
     """Only called in town or a confirmed result screen, never during combat.
 
@@ -68,7 +74,9 @@ def inspect_inventory(win,keys,screen,hwnd,control):
         if not panel or not panel.get('overlay'):return result
         if not keys.click((474,206),hwnd,control.cancelled):return result
         control.stop.wait(.15)
-        if not keys.move((390,231),hwnd,control.cancelled):return result
+        row,column=material_cell(getattr(control,'character',None))
+        screen.inventory_cell=(row,column)
+        if not keys.move((390+24*(column-1),231+24*(row-1)),hwnd,control.cancelled):return result
         control.stop.wait(.35)
         readings=[]
         for _ in range(3):
@@ -76,7 +84,7 @@ def inspect_inventory(win,keys,screen,hwnd,control):
             if not signals or not signals.get('overlay'):break
             texts=signals.get('texts',[])+signals.get('inventory_texts',[])
             quantity=quantities(texts)
-            # Tooltip identifies the item; read the first slot's count alone,
+            # Tooltip identifies the item; read the configured slot's count,
             # avoiding merged Chinese letters and clipped tooltip numbers.
             quantity['cubes']=cube_quantity(texts,signals.get('inventory_digits',[]))
             readings.append({**quantity,'texts':texts,'digits':signals.get('inventory_digits',[])})

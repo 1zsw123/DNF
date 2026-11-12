@@ -7,6 +7,14 @@ class DoorApproach:
         self.identity=None;self.aligned=False;self.push=25
         self.last_position=None;self.progress_at=0;self.probe=0;self.offset=0
         self.escape=[];self.escaped=set()
+    def portal_push(self,position,target):
+        """Cross the nearby trigger directly; outside-floor cells aren't walls."""
+        if not self.aligned or self.escape or self.identity is None:return None
+        _,x,y=self.identity
+        if math.dist(position,(x,y))>110:return None
+        dx,dy=target[0]-position[0],target[1]-position[1]
+        return frozenset(([('right' if dx>0 else 'left')] if abs(dx)>3 else [])+
+                         ([('down' if dy>0 else 'up')] if abs(dy)>3 else []))
     def target(self,door,position,doors=()):
         direction=door['direction'];x,y=door['x'],door['y']
         while self.escape and math.dist(position,self.escape[0])<=18:self.escape.pop(0)

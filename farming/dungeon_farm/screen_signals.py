@@ -16,10 +16,12 @@ def lifecycle_signals(found,dungeon='根特东门'):
     retry=None
     dungeon_option=None
     normal_option=None
-    notice=None;notice_confirm=None;ghost=False;target_selected=False
+    notice=None;notice_confirm=None;ghost=False;target_selected=False;map_titles=[]
     for box,text,confidence in found or []:
         point=np.asarray(box,dtype=float).mean(axis=0)
         value=normalize(text)
+        if float(confidence)>=.65 and 420<point[0]<640 and 0<=point[1]<40:
+            map_titles.append(value)
         if float(confidence)>=.65 and 220<point[0]<420 and 300<point[1]<390 and value in ('幽灵状态','幽靈狀態','幽灵狀態'):
             ghost=True
         if float(confidence)>=.65 and 200<point[0]<440 and 140<point[1]<300:
@@ -60,7 +62,7 @@ def lifecycle_signals(found,dungeon='根特东门'):
             # A merchant's overhead name is not an open panel. Never Escape
             # merely because a merchant happens to stand behind the result UI.
             'overlay':any(t in joined for t in ('装备栏','装备欄')),
-            'texts':texts}
+            'texts':texts,'map_title':''.join(map_titles)}
 
 def result_text(texts):
     joined=''.join(texts).replace(' ','').lower()
@@ -77,6 +79,7 @@ class ScreenSignals:
         self.capture=mss.mss()
         self.ocr=RapidOCR(intra_op_num_threads=2,inter_op_num_threads=1)
         self.due=0
+        self.inventory_cell=(1,1)
     def poll(self,win,hwnd,full=False):
         now=time.monotonic()
         if now<self.due: return None
@@ -91,16 +94,31 @@ class ScreenSignals:
         found=[[(np.asarray(item[0])/1.5+np.array([x,y])).tolist(),item[1],item[2]] for item in found or []]
         texts=[item[1] for item in found or [] if float(item[2])>=.65]
         signals=lifecycle_signals(found,self.dungeon)
+        if full and signals['selection'] and not signals['dungeon_option']:
+            # Unselected map cards use much smaller lettering than the HUD.
+            # Read the map area at native resolution before enlarging; resizing
+            # the entire window to 640 first can erase these thin strokes.
+            sy,sx=raw.shape[0]/480,raw.shape[1]/640
+            ox,oy=60,55
+            cards=raw[int(oy*sy):int(365*sy),int(ox*sx):int(550*sx)]
+            detail,_=self.ocr(cv2.resize(cards,None,fx=3,fy=3))
+            extra=[[(np.asarray(i[0])/(3*np.array([sx,sy]))+np.array([ox,oy])).tolist(),i[1],i[2]]
+                   for i in detail or []]
+            found+=extra
+            signals=lifecycle_signals(found,self.dungeon)
         if full and signals['overlay']:
             # Verified first material slot's tooltip header; enlarge only the
             # item name/count, and still require its exact name downstream.
             sy,sx=raw.shape[0]/480,raw.shape[1]/640
-            header=raw[int(104*sy):int(136*sy),int(294*sx):int(467*sx)]
+            row,column=self.inventory_cell
+            dx,dy=24*(column-1),24*(row-1)
+            hx=min(294+dx,467)
+            header=raw[int((104+dy)*sy):int((136+dy)*sy),int(hx*sx):int(min(640,hx+173)*sx)]
             detail,_=self.ocr(cv2.resize(header,None,fx=4,fy=4,interpolation=cv2.INTER_NEAREST))
             signals['inventory_texts']=[normalize(i[1]) for i in detail or [] if float(i[2])>=.8]
             variants=[]
             for y1,y2 in ((219,228),(220,228),(217,230)):
-                digits=raw[int(y1*sy):int(y2*sy),int(379*sx):int(403*sx)]
+                digits=raw[int((y1+dy)*sy):int((y2+dy)*sy),int((379+dx)*sx):int((403+dx)*sx)]
                 big=cv2.resize(digits,None,fx=6,fy=6,interpolation=cv2.INTER_NEAREST)
                 variants.append(big)
                 variants.append(cv2.resize(digits,None,fx=6,fy=6,interpolation=cv2.INTER_CUBIC))

@@ -3,6 +3,15 @@ from unittest.mock import patch
 from dungeon_farm.door_approach import DoorApproach
 
 class DoorTests(unittest.TestCase):
+    def test_final_portal_push_does_not_route_around_outside_floor(self):
+        approach=DoorApproach();door={'direction':'down','x':762,'y':490}
+        target=approach.target(door,(762,479))
+        self.assertEqual(approach.portal_push((762,479),target),frozenset({'down'}))
+        self.assertIsNone(approach.portal_push((298,486),target))
+    def test_portal_alignment_still_uses_navigation(self):
+        approach=DoorApproach();door={'direction':'down','x':762,'y':490}
+        target=approach.target(door,(700,445))
+        self.assertIsNone(approach.portal_push((700,445),target))
     def test_right_door_first_aligns_inside_wall(self):
         a=DoorApproach();d={'direction':'right','x':1340,'y':229}
         self.assertEqual(a.target(d,(1298,359)),(1280,229))

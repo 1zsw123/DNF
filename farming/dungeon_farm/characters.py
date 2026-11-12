@@ -10,8 +10,18 @@ from dungeon_farm.planner import FarmPlanner, Skill
 
 ROOT = Path(__file__).resolve().parents[1]
 STORE = Path(__file__).with_name('characters.json')
-ROTATIONS = ('通用全技能', '狂战士', '刃影冷却优先')
+ROTATIONS = ('通用全技能', '狂战士', '刃影冷却优先', '风神冷却优先', '机械之心召唤轮换')
 DUMMY = '__unused_solo_leader__'
+
+
+def decode_role_name(raw):
+    # A fixed memory read includes unrelated allocation bytes after the UTF-16
+    # terminator. Decode only the aligned, terminated name, still strictly.
+    if not raw:return ''
+    for offset in range(0,len(raw)-1,2):
+        if raw[offset:offset+2]==b'\0\0':
+            return raw[:offset].decode('utf-16le')
+    raise ValueError('角色名未完整读取，请稍后重试')
 
 
 def base_profile():
@@ -50,7 +60,9 @@ def validate_character(entry):
     if not isinstance(value,int) or not 0x400000<=value<0x4000000:
         raise ValueError('请用“读取当前角色”取得角色类型')
     if entry.get('rotation') not in ROTATIONS: raise ValueError('技能方案无效')
-    if entry.get('potion_key','3') not in ('1','3'): raise ValueError('血药键须为 1 或 3')
+    if entry.get('potion_key','3') not in ('1','2','3'): raise ValueError('血药键须为 1、2 或 3')
+    from dungeon_farm.inventory import material_cell
+    material_cell(entry)
 
 
 def save_characters(entries):
@@ -81,7 +93,7 @@ def discover_current():
         if not raw: raise ValueError('角色尚未加载，请进城镇后再读取')
         vt,kind,ptr=(struct.unpack_from('<I',raw,off)[0] for off in (0,0x90,0x258))
         namebytes=reader.process.read(ptr,96) if ptr else None
-        name=namebytes.decode('utf-16le').split('\0',1)[0] if namebytes else ''
+        name=decode_role_name(namebytes)
         if kind!=273 or not 1<=len(name)<=24 or not all(c.isprintable() for c in name):
             raise ValueError('当前对象不是有效玩家角色')
         if reader.uint(reader.local_root)!=address or reader.uint(address)!=vt or reader.uint(address+0x258)!=ptr:
@@ -93,6 +105,12 @@ def discover_current():
 
 
 def character_planner(character=None, dual_blades_active=True):
+    if character and character['rotation']=='机械之心召唤轮换':
+        from dungeon_farm.mechanic_rotation import make_planner
+        return make_planner(entry_helper=character.get('entry_helper',False))
+    if character and character['rotation']=='风神冷却优先':
+        from dungeon_farm.wind_rotation import make_planner
+        return make_planner(entry_helper=character.get('entry_helper',False))
     if character and character['rotation']=='刃影冷却优先':
         from dungeon_farm.blade_rotation import make_planner
         return make_planner(entry_helper=character.get('entry_helper',False))

@@ -6,6 +6,7 @@ An empty enemy list alone is not evidence that a room has been cleared.
 from dataclasses import dataclass
 from math import hypot, isfinite
 ENTRY_MODES=('entry_buff','entry_helper')
+VERIFIED_BUFF_COMMANDS=(('right','right','space'),('right','down','right','z'))
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,9 @@ class Observation:
     party_ready: bool = False
     results_ready: bool = False
     retry_available: bool = False
+    boss_room: bool = False
+    g_confirmed: bool = False
+    mp_fill: float | None = None
 
 
 @dataclass(frozen=True)
@@ -63,7 +67,7 @@ class Decision:
 
 
 class FarmPlanner:
-    def __init__(self, skills=(), attack_key='x', max_runs=1,allow_all_skills=False,toggle_active=()):
+    def __init__(self, skills=(), attack_key='x', max_runs=1,allow_all_skills=False,toggle_active=(),attack_range=(80,8),stand_off=50):
         if max_runs < 1:
             raise ValueError('max_runs must be positive')
         if attack_key != 'x':
@@ -73,11 +77,13 @@ class FarmPlanner:
                 raise ValueError('Invalid skill configuration')
         # Current verified berserker bindings only. Resource-cost annotations
         # alone must not accidentally enable a cube skill under an old key map.
-        self.skills = tuple(sorted((s for s in skills if (allow_all_skills and (s.key in 'qwertyasdfgh' or (s.mode=='entry_helper' and s.key=='4') or (s.mode=='entry_buff' and s.input_sequence==('right','right','space')))) or (s.cube_cost == 0 and s.key in {'a', 's', 'q'})),key=lambda s:(s.cooldown,s.mp_cost,s.cube_cost or 0)))
+        self.skills = tuple(sorted((s for s in skills if (allow_all_skills and (s.key in 'qwertyasdfgh' or (s.mode=='entry_helper' and s.key=='4') or (s.mode=='entry_buff' and s.input_sequence in VERIFIED_BUFF_COMMANDS))) or (s.cube_cost == 0 and s.key in {'a', 's', 'q'})),key=lambda s:(s.cooldown,s.mp_cost,s.cube_cost or 0)))
         self.entry_applied=set()
         self.toggle_active=set(toggle_active)
         self.releases={}
         self.attack_key = attack_key
+        self.attack_range=attack_range
+        self.stand_off=stand_off
         self.max_runs = max_runs
         self.completed = 0
         self.scene = None
@@ -182,8 +188,8 @@ class FarmPlanner:
             self.clear_since = None
             # Finish anything already in melee range before chasing a slightly
             # closer target on another lane.
-            hittable = [e for e in enemies if abs(e.x-obs.position[0])<=80
-                        and abs(e.y-obs.position[1])<=8]
+            hittable = [e for e in enemies if abs(e.x-obs.position[0])<=self.attack_range[0]
+                        and abs(e.y-obs.position[1])<=self.attack_range[1]]
             enemy = min(hittable or enemies, key=lambda e: hypot(e.x-obs.position[0], 1.8*(e.y-obs.position[1])))
             dx, dy = enemy.x-obs.position[0], enemy.y-obs.position[1]
             support=next((s for s in self.skills if s.mode in ('buff','toggle')
@@ -198,12 +204,12 @@ class FarmPlanner:
                           and s.mode not in ('buff','toggle',*ENTRY_MODES) and s.key not in self.releases
                           and abs(dx) <= s.range_x and abs(dy) <= s.range_y), None)
             skill=release or skill
-            if skill is None and (abs(dx) > 80 or abs(dy) > 8):
+            if skill is None and (abs(dx) > self.attack_range[0] or abs(dy) > self.attack_range[1]):
                 # When horizontal attack range is already satisfied, align
                 # lanes without pulling the character back across an obstacle.
-                stand_x=obs.position[0] if abs(dx)<=80 else enemy.x+(-50 if dx>=0 else 50)
+                stand_x=obs.position[0] if abs(dx)<=self.attack_range[0] else enemy.x+(-self.stand_off if dx>=0 else self.stand_off)
                 destination=(stand_x,enemy.y)
-                return Decision('approach', self.movement(obs.position,(enemy.x,enemy.y),(60,5)),
+                return Decision('approach', self.movement(obs.position,(stand_x,enemy.y),(10,5)),
                                 destination=destination)
             facing = 'right' if dx >= 0 else 'left'
             if obs.facing != facing:
@@ -227,11 +233,15 @@ class FarmPlanner:
         return Decision('exit', self.movement(obs.position,obs.exit_position,(4,4)))
 
 
-def attack_still_valid(decision,obs,scene,skill=None):
+def attack_still_valid(decision,obs,scene,skill=None,attack_range=(80,8)):
     """Recheck the selected target immediately before an attack key is sent."""
     if not obs.perception_valid or obs.scene!=scene or obs.dead or obs.loading:return False
+    if decision.action=='maintain_summon':
+        return bool(skill and skill.key in ('q','w','e') and obs.position is not None)
+    if decision.action=='awakening_enter' and not obs.g_confirmed:return False
     enemies=[e for e in obs.enemies if e.alive and (decision.target_id is None or e.identity==decision.target_id)]
     if not enemies or obs.position is None:return False
+    if decision.action=='awakening_fire':return decision.tap=='c'
     if decision.action=='buff':return True
-    rx,ry=(skill.range_x,skill.range_y) if skill else (80,8)
+    rx,ry=(skill.range_x,skill.range_y) if skill else attack_range
     return any(abs(e.x-obs.position[0])<=rx and abs(e.y-obs.position[1])<=ry for e in enemies)

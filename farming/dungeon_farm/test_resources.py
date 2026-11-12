@@ -1,8 +1,16 @@
 import unittest
 import numpy as np
-from dungeon_farm.resources import orb_fill,need_recovery
+from dungeon_farm.resources import orb_fill,need_recovery,RecoveryBudget
 
 class ResourceTests(unittest.TestCase):
+    def test_one_potion_budget_even_if_health_stays_low(self):
+        budget=RecoveryBudget()
+        low={'hp_fill':.2,'mp_fill':.8}
+        self.assertTrue(budget.available(low,.1))
+        budget.sent()
+        self.assertFalse(budget.available(low,.1))
+        self.assertFalse(budget.available({'hp_fill':0,'mp_fill':.8},.1))
+        self.assertTrue(RecoveryBudget().available(low,.1))
     def frame(self,hp,mp):
         frame=np.zeros((480,640,3),dtype=np.uint8)
         frame[460-round(hp*40):460,22:38,2]=150

@@ -1,6 +1,17 @@
 """Estimate the fixed HUD orb fill; never identify or use arbitrary items."""
 import numpy as np
 
+class RecoveryBudget:
+    """One potion input per dungeon run, including retries after revival."""
+    def __init__(self, limit=1):
+        self.limit=limit;self.used=0
+
+    def available(self, resources, age):
+        return self.used<self.limit and need_recovery(resources,age)
+
+    def sent(self):
+        self.used+=1
+
 def orb_fill(frame):
     def fill(x,channel):
         area=frame[420:460,x-8:x+8].astype(float)

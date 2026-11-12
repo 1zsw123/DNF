@@ -1,7 +1,12 @@
 import unittest
-from dungeon_farm.inventory import quantities,disassemble_needed,cube_quantity,cube_reserve
+from dungeon_farm.inventory import quantities,disassemble_needed,cube_quantity,cube_reserve,material_cell
 
 class InventoryTests(unittest.TestCase):
+    def test_material_slot_is_independent_per_character(self):
+        self.assertEqual(material_cell(None),(1,1))
+        self.assertEqual(material_cell({'cube_row':3,'cube_column':5}),(3,5))
+        for p in ({'cube_row':0},{'cube_column':9},{'cube_row':True}):
+            with self.assertRaises(ValueError):material_cell(p)
     def test_real_split_decimal_ocr_is_not_used_as_quantity(self):
         self.assertEqual(cube_quantity(['无色小晶块'],[['17.36',.85],['',0],['1736',.98],['1736',.985]]),1736)
         self.assertIsNone(cube_quantity(['无色小晶块'],[['17.36',.98],['17.36',.98]]))

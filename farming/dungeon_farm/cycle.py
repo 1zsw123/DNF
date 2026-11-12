@@ -12,6 +12,17 @@ from dungeon_farm.cycle_inputs import CycleInputs
 
 DATA=Path(__file__).resolve().parent
 
+def verified_arden_town(signals,reader,profile):
+    """Require both the harbor HUD and the selected actor's town scene."""
+    from dungeon_farm.screen_signals import normalize
+    title=normalize(signals.get('map_title',''))
+    if not reader or not any(name in title for name in ('悬空的海港','时空海港')):
+        return False
+    base=reader.uint(reader.local_root)
+    if not base or reader.uint(base+0xb8)!=0:return False
+    actor=reader.actor(base,0)
+    return bool(actor and actor['name']==profile['self_name'])
+
 def dungeon_difficulty(signals,dungeon='根特东门'):
     from dungeon_farm.screen_signals import normalize
     joined=''.join(normalize(t) for t in signals.get('texts',[]))
@@ -61,7 +72,9 @@ class ReplayPlan:
 def replay(control,report,old_scene,profile,dungeon='根特东门',reenter=True):
     win=Windows();keys=CycleInputs(win);screen=ScreenSignals(dungeon);plan=ReplayPlan()
     win.u.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)]
-    connection=CoordinateConnection(profile,connector=connect_solo)
+    from dungeon_farm.team import connect_party,follower_reentered
+    follower=getattr(control,'team_config',{}).get('mode')=='follower'
+    connection=CoordinateConnection(profile,connector=connect_party if follower else connect_solo)
     active=0;last=time.monotonic();fresh=0;expected_difficulty=getattr(control,'difficulty',None);inventory_checked=False;after_checked=False
     link=getattr(control,'team_link',None)
     team_mode=getattr(control,'team_config',{}).get('mode','solo')
@@ -71,7 +84,7 @@ def replay(control,report,old_scene,profile,dungeon='根特东门',reenter=True)
         log.write(json.dumps({'time':time.time(),'state':state,**kw},ensure_ascii=False)+'\n');log.flush()
     try:
         event('waiting_rewards')
-        if link:link.update(phase='maintenance',active=False,ready_for=None)
+        if link:link.update(phase='idle' if follower else 'maintenance',active=False,ready_for=None)
         while not control.stop.is_set():
             now=time.monotonic();dt=now-last;last=now
             hwnd=win.game()
@@ -87,6 +100,28 @@ def replay(control,report,old_scene,profile,dungeon='根特东门',reenter=True)
             if active>(240 if link else 120):return 'replay_timeout'
             signals=screen.poll(win,hwnd,full=True)
             if not signals:control.stop.wait(.05);continue
+            if follower:
+                # Followers never open inventory, maintain equipment, dismiss
+                # notices, or send F10. Only publish readiness and observe entry.
+                if signals.get('exhausted'):return 'fatigue_empty'
+                if signals.get('dead'):return 'character_dead'
+                if not reenter:return 'finished'
+                if plan.stage=='wait_result' and signals.get('retry'):
+                    if signals.get('overlay') or signals.get('notice'):
+                        report({'state':'follower_overlay'});control.stop.wait(.1);continue
+                    if not link or not control.team_round:return 'team_round_unconfirmed'
+                    link.update(phase='ready',ready_for=control.team_round)
+                    plan.stage='wait_entry';plan.sent_at=time.monotonic()
+                    event('waiting_leader');continue
+                if plan.stage=='wait_entry':
+                    pid=W.DWORD();win.u.GetWindowThreadProcessId(hwnd,C.byref(pid))
+                    sample=connection.sample(pid.value)
+                    valid=follower_reentered(signals,sample,old_scene,link.remote() if link else None,control.team_round)
+                    fresh=fresh+1 if valid else 0
+                    if fresh>=2:event('reentered');return 'reentered'
+                    if now-plan.sent_at>180:
+                        event('replay_failed',texts=signals.get('texts',[]));return 'replay_failed'
+                control.stop.wait(.05);continue
             if plan.stage!='wait_entry':
                 expected_difficulty=dungeon_difficulty(signals,dungeon) or expected_difficulty
             if plan.stage=='wait_result' and signals.get('retry') and not inventory_checked:
@@ -126,11 +161,6 @@ def replay(control,report,old_scene,profile,dungeon='根特东门',reenter=True)
                     continue
                 if not reenter:return 'finished'
                 if link:
-                    if team_mode=='follower':
-                        if not control.team_round:return 'team_round_unconfirmed'
-                        link.update(phase='ready',ready_for=control.team_round)
-                        plan.stage='wait_entry';plan.sent_at=time.monotonic()
-                        event('waiting_leader');continue
                     link.update(phase='ready')
                     if not link.ready():
                         report({'state':'waiting_partner_ready'})
@@ -142,6 +172,9 @@ def replay(control,report,old_scene,profile,dungeon='根特东门',reenter=True)
             if plan.stage=='wait_entry':
                 pid=W.DWORD();win.u.GetWindowThreadProcessId(hwnd,C.byref(pid))
                 sample=connection.sample(pid.value)
+                if (team_mode=='solo' and dungeon=='阿登高地' and now-plan.sent_at>=3
+                        and not sample and verified_arden_town(signals,connection.reader,profile)):
+                    event('town_reentry');return 'town_reentry'
                 doors=read_doors(connection.reader,sample['scene'],dungeon) if sample else []
                 valid=fresh_dungeon_room(signals,sample,old_scene,doors,expected_difficulty or '普通级',dungeon,allow_hidden_difficulty=expected_difficulty is not None)
                 fresh=fresh+1 if valid else 0

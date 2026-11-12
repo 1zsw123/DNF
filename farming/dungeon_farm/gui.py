@@ -20,6 +20,7 @@ STATES={
  'face_enemy':'正在调整攻击朝向','combat':'正在攻击','casting':'普攻与技能衔接中',
  'confirm_clear':'等待补刷，继续检查怪物','new_wave':'发现新一轮怪物，继续清理','exit':'正在寻路过门','choose_exit':'请选择下一个出口',
  'finished':'已通关 · 自动输入已停止','unknown_monsters':'发现未适配怪物，已停止',
+ 'unknown_ignored':'已忽略未适配对象，继续刷图',
  'no_path':'暂时找不到通路，已暂停','error':'运行出错，已停止','stopped':'已停止',
  'time_limit':'已达到本轮时间上限，自动停止','waiting':'等待有效游戏数据',
  'round_finished':'本局通关，准备按库存分解或卖装','waiting_rewards':'等待结算结束与再次挑战按钮',
@@ -27,6 +28,7 @@ STATES={
  'retrying':'正在按 F10 再次挑战','reentered':'已重进，继续下一局',
  'fatigue_empty':'疲劳不足，循环已停止','character_dead':'角色死亡，循环已停止',
  'replay_timeout':'等待结算超时，循环已停止','replay_failed':'未能重新进图，循环已停止',
+ 'town_reentry':'检测到结算后回城，按原难度重新入场',
  'close_overlay':'正在关闭遮挡重进菜单的窗口','overlay_blocked':'结算窗口仍被遮挡，循环已停止',
  'inventory':'正在打开背包','maintenance_sent':'按键已发送，请核对游戏内效果',
  'maintenance_input_sent':'维护按键已发送，等待游戏反馈',
@@ -37,18 +39,24 @@ STATES={
  'inventory_checked':'已核对金币与无色库存','inspect_inventory':'正在核对金币与无色库存',
  'inventory_after_maintenance':'已记录维护后的余额',
  'round_statistics':'本局收益已记录',
- 'recovering':'血量低于 50%，使用当前角色配置的血药',
+ 'recovering':'血量低于 50%，使用本局唯一一次血药',
  'revive':'确认死亡，按 X 复活','waiting_revive':'已按 X，等待复活',
  'revived':'已复活，恢复战斗','revive_failed':'按 X 后仍未复活，已停止',
+ 'revive_unconfirmed':'复活后未收到新画面，已停止并等待检查',
  'maintenance_confirmed':'已识别维护成功提示，自动确认',
  'returned_town':'战斗未通关就回城，已停止；请检查角色状态',
  'wrong_dungeon':'未确认目标地图或难度，已停止，不启动战斗',
+ 'wrong_character':'游戏角色与所选方案不符，请点击“读取当前角色”',
  'waiting_dungeon':'请进目标副本，或使用自动入场按钮',
  'difficulty_unconfirmed':'所选难度尚未确认，未发送入场键',
  'team_connecting':'正在建立双机组队连接',
  'waiting_partner':'等待队友连接或靠近门口',
- 'following':'小号正在寻路跟随大号','following_close':'已跟上大号',
- 'waiting_leader':'小号已完成维护，等待大号重进',
+ 'following':'清场后前往大号所在门口','following_close':'已在大号门口集合',
+ 'following_entering':'已对齐门口，正在跨门并等待换房',
+ 'waiting_room_clear':'小号原地等待清怪及二轮补刷',
+ 'waiting_leader_door':'房间已清，等待大号到出口旁',
+ 'waiting_leader':'小号已就绪，等待大号重进（不卖装、不修理）',
+ 'follower_overlay':'小号结算有遮挡，等待关闭；不自动操作',
  'waiting_partner_ready':'等待小号卖装、修理完成，再按 F10',
  'team_round_unconfirmed':'未确认同一轮组队战斗，已停止重进',
  'boss_route':'已按小地图规划通往 Boss 的路线',
@@ -119,8 +127,11 @@ class App:
         self.repeat_box=ttk.Checkbutton(panel,text='自动连续挑战 · 不足分解 / 够用卖装 → 修理 → F10',variable=self.repeat)
         self.repeat_box.pack(anchor='w',pady=(10,0))
         self.dual_active=tk.BooleanVar(value=True)
-        self.dual_box=ttk.Checkbutton(panel,text='狂战士专用：双刀当前已开',variable=self.dual_active)
-        self.dual_box.pack(anchor='w',pady=(4,0))
+        character_options=ttk.Frame(panel);character_options.pack(fill='x',pady=(4,0))
+        self.dual_box=ttk.Checkbutton(character_options,text='狂战士专用：双刀当前已开',variable=self.dual_active)
+        self.dual_box.pack(side='left')
+        self.supplies_button=ttk.Button(character_options,text='血药、人偶与无色',command=self.configure_supplies,padding=(8,3))
+        self.supplies_button.pack(side='right')
         self.preset_info=ttk.Label(panel,foreground='#5b6b80',wraplength=520)
         self.preset_info.pack(anchor='w',pady=(8,12));self.update_preset()
         self.status=tk.StringVar(value=STATES['ready'])
@@ -128,7 +139,7 @@ class App:
         tk.Label(statusbox,textvariable=self.status,bg='white',fg='#183353',font=('Microsoft YaHei UI',13,'bold'),wraplength=480,anchor='w',justify='left').pack(fill='x')
         self.metrics=tk.StringVar(value=f'角色：{self.character_name.get()}    本轮房间：—    剩余怪物：—')
         tk.Label(statusbox,textvariable=self.metrics,bg='white',fg='#5b6b80',font=('Microsoft YaHei UI',10),anchor='w').pack(fill='x',pady=(10,0))
-        self.detail=tk.StringVar(value='全技能；血量低于 50% 才吃药；确认死亡按 X 复活。')
+        self.detail=tk.StringVar(value='全技能；血量低于 50% 才吃药，每局最多 1 瓶；死亡按 X 复活。')
         ttk.Label(panel,textvariable=self.detail,foreground='#5b6b80',wraplength=520).pack(anchor='w',pady=(10,12))
         controls=ttk.Frame(panel);controls.pack(fill='x')
         self.start_btn=ttk.Button(controls,text='开始  F8',style='Start.TButton',command=self.start)
@@ -183,6 +194,34 @@ class App:
             try:self.messages.put({'state':'character_detected','character':discover_current()})
             except Exception as exc:self.messages.put({'state':'character_read_failed','detail':str(exc)})
         threading.Thread(target=read,daemon=True).start()
+    def configure_supplies(self):
+        if self.alive():return
+        entry=next(c for c in self.characters if c['name']==self.character_name.get())
+        dialog=tk.Toplevel(self.root);dialog.title('血药、人偶与无色 · '+entry['name'])
+        dialog.transient(self.root);dialog.resizable(False,False)
+        body=ttk.Frame(dialog,padding=18);body.pack(fill='both',expand=True)
+        enabled=tk.BooleanVar(value=self.auto_potion.get())
+        key=tk.StringVar(value=entry.get('potion_key','3'))
+        helper=tk.BooleanVar(value=entry.get('entry_helper',False))
+        cube_row=tk.IntVar(value=entry.get('cube_row',1));cube_column=tk.IntVar(value=entry.get('cube_column',1))
+        ttk.Checkbutton(body,text='启用血药：低于50%才用，每局最多1瓶',variable=enabled).pack(anchor='w')
+        row=ttk.Frame(body);row.pack(fill='x',pady=10)
+        ttk.Label(row,text='血药快捷键').pack(side='left',padx=(0,12))
+        ttk.Combobox(row,textvariable=key,values=('1','2','3'),state='readonly',width=5).pack(side='left')
+        ttk.Checkbutton(body,text='每局进图按一次4召唤人偶',variable=helper).pack(anchor='w')
+        cube=ttk.Frame(body);cube.pack(fill='x',pady=10)
+        ttk.Label(cube,text='无色在材料栏：第').pack(side='left')
+        ttk.Combobox(cube,textvariable=cube_row,values=tuple(range(1,7)),state='readonly',width=3).pack(side='left')
+        ttk.Label(cube,text='行，第').pack(side='left')
+        ttk.Combobox(cube,textvariable=cube_column,values=tuple(range(1,9)),state='readonly',width=3).pack(side='left')
+        ttk.Label(cube,text='列（从左上角数）').pack(side='left')
+        ttk.Label(body,text='请在游戏中核对：所选格子是血药，4号位是人偶。\n药用完后该格可能被自动拾取的物品占用。\n设置仅保存到当前角色，其他角色不变。',wraplength=430,foreground='#5b6b80').pack(anchor='w',pady=12)
+        def save():
+            entry.update(auto_potion=enabled.get(),potion_key=key.get(),entry_helper=helper.get(),rotation=self.rotation.get(),cube_row=cube_row.get(),cube_column=cube_column.get())
+            save_characters(self.characters);self.select_character()
+            self.status.set('已保存 '+entry['name']+' 的血药与人偶设置');dialog.destroy()
+        ttk.Button(body,text='保存',command=save).pack(side='right')
+        dialog.grab_set();dialog.focus_set()
     def configure_team(self):
         if self.alive():return
         from dungeon_farm.team_ui import configure,LABELS
@@ -224,6 +263,9 @@ class App:
         self.control=Control()
         self.control.character=dict(selected);self.control.auto_potion=self.auto_potion.get()
         self.control.team_config=team_config
+        self.repeat_box.configure(text=('自动连续跟随 · 结算只等大号重进，不卖装、不修理'
+                                        if team_config.get('mode')=='follower' else
+                                        '自动连续挑战 · 不足分解 / 够用卖装 → 修理 → F10'))
         if team_config.get('mode','solo')!='solo':self.solo.set(True)
         self.control.dual_blades_active=self.dual_active.get()
         self.worker=threading.Thread(target=run,args=(self.control,self.selected.get(),self.messages.put),kwargs={'solo':self.solo.get(),'repeat':self.repeat.get(),'difficulty':self.difficulty.get(),'allow_town_entry':enter,'max_runs':run_limit or None},daemon=False)
@@ -234,6 +276,7 @@ class App:
     def utility(self,action):
         if self.alive():return
         self.control=Control()
+        self.control.character=dict(next(c for c in self.characters if c['name']==self.character_name.get()))
         self.worker=threading.Thread(target=maintenance,args=(self.control,self.messages.put,action),daemon=False)
         self.start_btn.configure(state='disabled');self.pause_btn.configure(state='normal');self.stop_btn.configure(state='normal')
         self.worker.start()
@@ -279,17 +322,23 @@ class App:
                 self.start_btn.configure(state='normal');self.pause_btn.configure(state='disabled');self.stop_btn.configure(state='disabled')
                 self.maps.configure(state='readonly');self.mode.configure(state='normal')
                 self.repeat_box.configure(state='normal')
-                if result not in ('unknown_monsters','error'):
+                if result not in ('unknown_monsters','error','wrong_character'):
                     self.detail.set(f"本次已通关 {update.get('completed',0)} 局 · {self.status.get()}")
                 self.append(self.status.get());self.door_choices=[]
                 continue
-            self.status.set(STATES.get(state,state))
+            follower=self.control.team_config.get('mode')=='follower' if self.control else False
+            self.status.set('小号通关，等待大号重进（跳过维护）' if state=='round_finished' and follower else STATES.get(state,state))
             if 'rooms' in update:self.metrics.set(f"已通关 {update.get('completed',0)} 局    本局房间：{update.get('rooms',0)}    怪物：{update.get('enemies') if update.get('enemies') is not None else '—'}")
             if state=='unknown_monsters':
                 self.detail.set('未适配：'+update.get('detail','未知角色'))
                 self.append(self.detail.get())
+            elif state=='unknown_ignored':
+                self.detail.set('已忽略：'+update.get('detail','未知对象'))
+                self.append(self.detail.get())
             elif state=='choose_exit':self.detail.set('本房间已无已知怪物。请使用下面的选门按钮。')
-            elif state=='error':self.detail.set(update.get('detail','请查看本机错误记录。'))
+            elif state in ('error','wrong_character'):self.detail.set(update.get('detail','请查看本机错误记录。'))
+            elif state in ('waiting_partner','waiting_room_clear','waiting_leader_door','following','following_close','following_entering'):
+                self.detail.set(update.get('detail') or '小号只在清场后集合，不参与攻击。')
             elif state=='inventory_checked' and 'detail' in update:self.detail.set(update['detail']);self.append(update['detail'])
             elif state=='inventory_checked' and 'inventory' in update:
                 count=update['inventory'].get('cubes')
@@ -300,7 +349,7 @@ class App:
                 text=f"本局含维护 {seconds} 秒 · 净金币 {net if net is not None else '基线缺失'}"
                 self.detail.set(text);self.append(text)
             elif 'elapsed' in update:self.detail.set(f"本局 {int(update.get('elapsed',0))} 秒 · 第 {update.get('wave',1)} 波 · 全技能轮换")
-            else:self.detail.set(f"本次已通关 {update.get('completed',0)} 局 · 按库存分解或卖装，再次挑战")
+            else:self.detail.set(f"本次已通关 {update.get('completed',0)} 局 · "+('小号结算不操作，等待大号重进' if follower else '按库存分解或卖装，再次挑战'))
             if state=='choose_exit':self.door_choices=update.get('doors',[])
             elif state in ('room_entered','combat','approach','exit','finished','unknown_monsters','error'):
                 self.door_choices=[]
@@ -311,6 +360,7 @@ class App:
         self.dual_box.configure(state='disabled' if self.alive() or self.rotation.get()!='狂战士' else 'normal')
         self.character_box.configure(state='disabled' if self.alive() else 'readonly')
         self.team_button.configure(state='disabled' if self.alive() else 'normal')
+        self.supplies_button.configure(state='disabled' if self.alive() else 'normal')
         self.rotation_box.configure(state='disabled' if self.alive() else 'readonly')
         self.potion_box.configure(state='disabled' if self.alive() else 'normal')
         if self.alive():self.discover_button.configure(state='disabled')

@@ -1,9 +1,13 @@
 import unittest
 from unittest.mock import patch
-from dungeon_farm.characters import selected_profile, character_planner, validate_character
+from dungeon_farm.characters import selected_profile, character_planner, validate_character, decode_role_name
 
 
 class CharacterTests(unittest.TestCase):
+    def test_role_name_ignores_invalid_bytes_after_aligned_terminator(self):
+        self.assertEqual(decode_role_name('上头枪'.encode('utf-16le')+b'\0\0\0\xd8'),'上头枪')
+        with self.assertRaises(UnicodeDecodeError):decode_role_name(b'\0\xd8\0\0')
+        with self.assertRaises(ValueError):decode_role_name(b'A\0B\0')
     def test_selected_role_replaces_previous_role_without_mutating_source(self):
         original={'self_name':'旧角色','leader_name':'队友','role_types':{'旧角色':0x16f972c,'队友':0x16fc11c},'client_sha256':'test'}
         entry={'name':'新角色','role_type':0x16fc11c,'rotation':'通用全技能'}

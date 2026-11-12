@@ -29,7 +29,8 @@ class MinimapSignals:
         frame=cv2.resize(np.asarray(self.capture.grab(rect))[:,:,:3],(640,480))
         debug={}
         value=read_minimap(frame,self.dungeon,debug)
-        return {'minimap':value,'diagnostic':debug}
+        from dungeon_farm.resources import orb_fill
+        return {'minimap':value,'diagnostic':debug,'resources':orb_fill(frame)}
 
     def close(self):self.capture.close()
 

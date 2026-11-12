@@ -17,7 +17,7 @@ from dungeon_farm.screen_signals import ScreenSignals
 from dungeon_farm.waves import WaveTracker
 from dungeon_farm.exploration import RoomExplorer
 from dungeon_farm.berserker_rotation import make_planner
-from dungeon_farm.resources import need_recovery
+from dungeon_farm.resources import need_recovery, RecoveryBudget
 from dungeon_farm.background_signals import BackgroundSignals
 from dungeon_farm.revival import Revival
 from dungeon_farm.door_approach import DoorApproach
@@ -48,7 +48,12 @@ class Control:
 
 def run_round(control,dungeon,report,solo=True,limit=1800):
     control.round_cube_upper=0
-    preset=json.loads((DATA/'presets.json').read_text(encoding='utf-8'))[dungeon]
+    recovery_budget=RecoveryBudget(limit=1)
+    presets=json.loads((DATA/'presets.json').read_text(encoding='utf-8'))
+    team_mode=control.team_config.get('mode','solo')
+    from dungeon_farm.team import follower_scene_preset
+    actual_dungeon=None if team_mode=='follower' else dungeon
+    preset=follower_scene_preset(presets,'')[1] if team_mode=='follower' else presets[dungeon]
     allowed={int(v,16) for v in preset['monster_types']}
     apcs={int(v,16):names for v,names in preset.get('apc_targets',{}).items()}
     friends={int(v,16):names for v,names in preset.get('friendly_apcs',{}).items()}
@@ -57,7 +62,7 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
     potion_key=(control.character or {}).get('potion_key','3')
     team_mode=control.team_config.get('mode','solo')
     link=control.team_link
-    from dungeon_farm.team import connect_party,gate_ready,follower_decision
+    from dungeon_farm.team import connect_party,gate_ready,follower_decision,follower_scene_preset,follower_link_ready
     if team_mode!='solo':profile['party_name']=control.team_config['partner']
     win=Windows()
     win.u.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)]
@@ -65,13 +70,14 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
     connection=CoordinateConnection(profile,connector=connect_party if team_mode!='solo' else connect_solo) if solo else CoordinateConnection(profile)
     keys=CombatInputs(win,all_skills=True);planner=character_planner(control.character,control.dual_blades_active)
     planner.last_used.update(control.skill_last_used)
-    nav=Navigator();screen=None;room=None;rooms=0;facing=None;waves=WaveTracker();explorer=RoomExplorer()
+    nav=Navigator(entry_grace=3);screen=None;room=None;rooms=0;facing=None;waves=WaveTracker();explorer=RoomExplorer()
     doors=[];next_exit=None;exiting=None;destination=None;last_status=0;door_approach=DoorApproach()
     started=time.monotonic();manual_until=0;screen_checks=0;outcome='stopped'
     last_sample=None;last_obs=None;battle_started=None;resources=None;resources_time=0
     minimap_route=MinimapRoute();minimap=None;minimap_time=0
     map_screen=None;map_signals={}
     lost_since=None;screen_epoch=time.monotonic();last_screen=0;revival=Revival()
+    ignored_objects=set();was_retreat=False;resource_overlay=False
     log=(DATA/'gui-run.jsonl').open('w',encoding='utf-8')
     def emit(state,force=False,**more):
         nonlocal last_status
@@ -84,18 +90,20 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
     try:
         emit('initializing',True)
         screen=BackgroundSignals(win,control,factory=lambda:ScreenSignals(dungeon))
-        if dungeon=='阿登高地':
+        if dungeon=='阿登高地' and team_mode!='follower':
             map_screen=BackgroundSignals(win,control,factory=lambda:MinimapSignals(dungeon))
         win.u.GetAsyncKeyState(0x1b);win.u.GetAsyncKeyState(0x0d)
         while not control.stop.is_set() and (battle_started is None or time.monotonic()-battle_started<limit):
             now=time.monotonic()
             if control.paused.is_set():
+                revival.suspend(now)
                 if link:link.update(active=False)
                 screen_epoch=now
                 win.release();nav.pause();waves.suspend()
                 emit('paused');control.stop.wait(.05);continue
             hwnd=win.game()
             if not hwnd or not win.foreground(hwnd):
+                revival.suspend(now)
                 if link:link.update(active=False)
                 screen_epoch=now
                 win.release();nav.pause();waves.suspend()
@@ -105,15 +113,26 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 control.paused.set();win.release();continue
             if win.manual_arrows(): manual_until=now+.6
             if now<manual_until:
+                revival.suspend(now)
                 if link:link.update(active=False)
                 win.release();nav.pause();emit('manual');control.stop.wait(.04);continue
             if link:link.update(active=True,phase='combat')
             screen_value=screen.read(after=screen_epoch)
             if screen_value and screen_value[0]>last_screen:
                 last_screen,_,signals=screen_value
+                resource_overlay=bool(signals.get('overlay'))
+                if team_mode=='follower' and signals.get('map_title'):
+                    detected,current=follower_scene_preset(presets,signals['map_title'])
+                    if detected!=actual_dungeon:
+                        actual_dungeon=detected
+                        allowed={int(v,16) for v in current.get('monster_types',[])}
+                        apcs={int(v,16):names for v,names in current.get('apc_targets',{}).items()}
+                        friends={int(v,16):names for v,names in current.get('friendly_apcs',{}).items()}
+                        summons={int(v,16):names for v,names in current.get('friendly_monsters',{}).items()}
+                        waves.suspend()
                 if signals and not signals.get('overlay'):
                     resources=signals;resources_time=last_screen
-                if revival.observe(bool(signals.get('dead'))):
+                if revival.observe(bool(signals.get('dead')),last_screen):
                     planner.revived()
                     planner.toggle_active.discard('h');planner.last_used.pop('h',None)
                     control.dual_blades_active=False;planner.casting_until=0
@@ -123,7 +142,8 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
             revive_action=revival.action(time.monotonic())
             if revive_action:
                 win.release();nav.pause();emit(revive_action)
-                if revive_action=='revive_failed':outcome='revive_failed';break
+                if revive_action in ('revive_failed','revive_unconfirmed'):
+                    outcome=revive_action;break
                 if revive_action=='revive' and keys.tap('x',hwnd,control.cancelled):
                     revival.sent(time.monotonic())
                     log.write(json.dumps({'time':time.time(),'state':'revive','tap':'x'})+'\n');log.flush()
@@ -133,8 +153,12 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
             if map_value and map_value[0]>minimap_time:
                 minimap_time,_,map_signals=map_value
                 minimap=map_signals.get('minimap')
+                # Orb colors are cheap; do not wait for full-frame text OCR
+                # before deciding whether a potion or mana reserve is needed.
+                if not resource_overlay and map_signals.get('resources'):
+                    resources=map_signals['resources'];resources_time=minimap_time
             pid=W.DWORD();win.u.GetWindowThreadProcessId(hwnd,C.byref(pid))
-            value=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons)
+            value=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons,ignore_unknown=team_mode!='follower')
             if value is None:
                 if last_sample and connection.reader:
                     reader=connection.reader;base=reader.uint(reader.local_root)
@@ -152,10 +176,16 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
             lost_since=None
             if battle_started is None:battle_started=time.monotonic()
             if sample['unverified_monsters'] and team_mode!='follower':
-                win.release();outcome='unknown_monsters'
-                (DATA/'unverified-monsters.json').write_text(json.dumps(sample['unverified_details'],ensure_ascii=False,indent=2),encoding='utf-8')
-                names=list(dict.fromkeys(x.get('name') or '未命名角色' for x in sample['unverified_details']))
-                emit('unknown_monsters',True,detail='、'.join(names));break
+                # User-selected policy: skip unclassified objects, keep the
+                # known targets usable, and record each type/name once/room.
+                unseen=[x for x in sample['unverified_details']
+                        if (obs.scene,x['type'],x.get('name','')) not in ignored_objects]
+                if unseen:
+                    ignored_objects.update((obs.scene,x['type'],x.get('name','')) for x in unseen)
+                    (DATA/'unverified-monsters.json').write_text(json.dumps(sample['unverified_details'],ensure_ascii=False,indent=2),encoding='utf-8')
+                    log.write(json.dumps({'time':time.time(),'scene':obs.scene,'state':'unknown_ignored','objects':unseen},ensure_ascii=False)+'\n');log.flush()
+                    names=list(dict.fromkeys(x.get('name') or '未命名角色' for x in unseen))
+                    emit('unknown_ignored',True,detail='、'.join(names))
             if obs.scene!=room:
                 win.release()
                 resources=None;resources_time=0;screen_epoch=time.monotonic()
@@ -183,20 +213,49 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 if planned!=next_exit:
                     next_exit=planned
                     if planned:emit('boss_route',True,detail='已记住本房出口：'+planned['direction'],path=minimap_route.path)
-            if control.auto_potion and time.monotonic()>=control.next_recovery and need_recovery(resources,time.monotonic()-resources_time):
+            obs=replace(obs,boss_room=(dungeon=='阿登高地' and team_mode!='follower'
+                                     and minimap_route.status=='at_boss'),
+                        mp_fill=resources.get('mp_fill') if resources and time.monotonic()-resources_time<2 else None)
+            if control.auto_potion and time.monotonic()>=control.next_recovery and recovery_budget.available(resources,time.monotonic()-resources_time):
                 win.release();nav.pause();emit('recovering',True)
                 if keys.tap(potion_key,hwnd,control.cancelled):
+                    recovery_budget.sent()
                     control.next_recovery=time.monotonic()+10.5
                     log.write(json.dumps({'time':time.time(),'scene':room,'position':obs.position,'enemies':len(obs.enemies),'state':'recovering','tap':potion_key,'hp_fill':resources['hp_fill'],'mp_fill':resources['mp_fill'],'move':[]})+'\n');log.flush()
                 continue
-            exit_ready,new_wave=waves.update(bool(obs.enemies),now)
+            # Unclassified actors cannot prove a clear room on a follower's
+            # arbitrary dungeon. A new wave immediately revokes rendezvous.
+            has_enemies=bool(obs.enemies) or (team_mode=='follower' and bool(sample['unverified_monsters']))
+            exit_ready,new_wave=waves.update(has_enemies,now)
             remote=link.remote() if link else None
             linked=bool(remote and remote['active'] and remote['phase']=='combat')
             partner=sample.get('party')
             if team_mode=='follower':
+                linked=follower_link_ready(remote,partner)
                 if linked:control.team_round=[remote['session'],remote['round']]
-                decision=follower_decision(obs.position,partner,linked)
+                # Refresh exit geometry while waiting: doors may initialize
+                # only after combat. Do not reuse entry-time door snapshots.
+                doors=read_doors(connection.reader,sample['scene'],None)
+                decision=follower_decision(obs.position,partner,linked,room_clear=exit_ready,doors=doors,door_approach=door_approach)
+                if decision.destination is None:
+                    # Combat, lost peers or ambiguous exits revoke pending
+                    # portal pushes; a later clear must align afresh.
+                    door_approach=DoorApproach()
+                if not partner:
+                    decision=replace(decision,reason='同房间未找到指定大号：'+control.team_config['partner'])
+                elif not linked:
+                    reason=('双机连接未就绪：'+link.error if link and link.error else
+                            ('大号当前阶段：'+str(remote.get('phase')) if remote else '尚未收到大号有效心跳'))
+                    decision=replace(decision,reason=reason)
+                if decision.state=='waiting_room_clear':
+                    names=list(dict.fromkeys(v.get('name') or v.get('type','未知对象') for v in sample['unverified_details']))
+                    reason=('尚有未分类对象：'+'、'.join(names)) if names else ('尚有怪物，原地等清场' if obs.enemies else '怪物已清，等待3.5秒补刷确认')
+                    decision=replace(decision,reason=reason)
             elif planner.needs_entry_buff:
+                decision=planner.step(obs,time.monotonic())
+            elif getattr(planner,'needs_maintenance',getattr(planner,'needs_summon_maintenance',lambda t:False))(time.monotonic()):
+                # Clearing/door navigation normally bypasses the combat
+                # planner. Let verified G transforms keep the summon alive.
                 decision=planner.step(obs,time.monotonic())
             elif obs.enemies:
                 if new_wave:
@@ -246,38 +305,62 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                     destination=door_approach.target(exiting,obs.position,doors)
                     decision=Decision('exit',destination=destination)
             if decision.destination is not None:
-                move=nav.steer(room,obs.position,decision.destination,time.monotonic())
+                retreat_options=({'avoid':[(e.x,e.y) for e in obs.enemies if e.alive],
+                                  'floor_bounds':getattr(planner,'floor_bounds',None),'urgent':True}
+                                 if decision.action=='retreat' else {})
+                portal_move=door_approach.portal_push(obs.position,decision.destination) if decision.state=='exit' else None
+                if portal_move is not None:
+                    # The trigger extends beyond the walkable edge. Learning
+                    # that edge as terrain sends A* around the whole room.
+                    nav.pause();move=portal_move
+                else:move=nav.steer(room,obs.position,decision.destination,time.monotonic(),**retreat_options)
                 decision=replace(decision,move=move)
-                if nav.no_path:
+                if portal_move is None and nav.no_path:
                     (DATA/'navigation-failure.json').write_text(json.dumps({'time':time.time(),'scene':room,'position':obs.position,'destination':decision.destination,'reason':nav.failure_reason,'blocked':sorted(nav.blocked),'contacts':sorted(nav.contacts),'free':sorted(nav.free),'enemies':[{'x':e.x,'y':e.y,'id':e.identity} for e in obs.enemies]},ensure_ascii=False,indent=2),encoding='utf8')
                     win.release();control.paused.set();emit('no_path',True,detail=nav.failure_reason or '未找到可通行路线');continue
             else: nav.pause()
             emit(decision.state,detail=decision.reason,doors=[d['direction'] for d in doors])
             log.write(json.dumps({'time':time.time(),'scene':room,'position':obs.position,
-                      'enemies':len(obs.enemies),'state':decision.state,'tap':decision.tap,
-                      'wave':waves.number,'doors':doors,
+                      'enemies':len(obs.enemies),'unverified':len(sample['unverified_monsters']),
+                      'state':decision.state,'reason':decision.reason,'tap':decision.tap,
+                      'actual_dungeon':actual_dungeon,'peer_phase':remote.get('phase') if remote else None,
+                      'peer_active':remote.get('active') if remote else None,
+                      'wave':waves.number,'doors':doors,'boss_room':obs.boss_room,'g_confirmed':obs.g_confirmed,'mp_fill':obs.mp_fill,
                       'minimap':minimap,'destination':decision.destination,
                       'remembered_route':minimap_route.path,'planned_exit':next_exit['direction'] if next_exit else None,
                       'move':sorted(decision.move),'collisions':nav.collisions},ensure_ascii=False)+'\n')
             log.flush()
             if control.cancelled(): win.release();continue
             if decision.tap:
+                was_retreat=False
                 skill=next((s for s in planner.skills if s.key==decision.tap),None)
                 if decision.action not in ('entry_buff','entry_helper'):
-                    fresh=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons)
-                    if fresh is None or not attack_still_valid(decision,fresh[0],room,skill):
+                    fresh=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons,ignore_unknown=team_mode!='follower')
+                    if fresh is None or not attack_still_valid(decision,fresh[0],room,skill,planner.attack_range):
                         planner.cancel_attack();win.release();continue
                 success=keys.cast(skill,hwnd,control.cancelled) if skill else keys.tap(decision.tap,hwnd,control.cancelled)
                 planner.acknowledge(decision,time.monotonic(),success)
                 if success and skill:
                     log.write(json.dumps({'time':time.time(),'scene':room,'position':obs.position,'enemies':len(obs.enemies),'state':'skill_cast','tap':skill.key,'skill':skill.name or skill.key,'cooldown':skill.cooldown,'action':decision.action},ensure_ascii=False)+'\n');log.flush()
+                if success and decision.action=='awakening_enter':
+                    # This client's explicit immediate-fire sequence: do not
+                    # wait for another coordinate sample or animation timer.
+                    fire=planner.immediate_awakening_fire()
+                    fired=keys.tap('c',hwnd,control.cancelled)
+                    planner.acknowledge(fire,time.monotonic(),fired)
+                    log.write(json.dumps({'time':time.time(),'scene':room,'state':'awakening_fire_input','tap':'c','sent':fired,'immediate':True})+'\n');log.flush()
+                if decision.action=='awakening_fire':
+                    log.write(json.dumps({'time':time.time(),'scene':room,'state':'awakening_fire_input','tap':'c','sent':success})+'\n');log.flush()
                 if success and decision.tap=='h':control.dual_blades_active=True
                 if success and decision.action!='release':
                     skill=next((s for s in planner.skills if s.key==decision.tap),None)
                     if skill:control.round_cube_upper+=2*(skill.cube_cost or 0)
             else:
-                running=decision.state in ('approach','exit','following') and decision.destination is not None and abs(decision.destination[0]-obs.position[0])>180
+                running=decision.state in ('approach','exit','following') and decision.destination is not None and abs(decision.destination[0]-obs.position[0])>(40 if decision.action=='retreat' else 180)
+                retreat_sprint=decision.action=='retreat' and running
+                if retreat_sprint and not was_retreat:win.release()
                 win.apply(set(decision.move),hwnd,run=bool(running))
+                was_retreat=retreat_sprint
                 if 'left' in decision.move:facing='left'
                 elif 'right' in decision.move:facing='right'
             control.stop.wait(.02)
@@ -311,6 +394,14 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
             raise ValueError('当前开放普通、冒险、勇士级；不自动提高所选难度')
         if repeat and (dungeon not in SUPPORTED_DUNGEONS or not solo):
             raise ValueError('循环模式仅支持已配置的单人副本')
+        if control.character:
+            # Verify identity before inventory/maintenance can send any input.
+            from dungeon_farm.characters import discover_current
+            current=discover_current()
+            if any(current[key]!=control.character[key] for key in ('name','role_type')):
+                outcome='wrong_character'
+                emit({'state':outcome,'detail':f"游戏：{current['name']}；所选：{control.character['name']}。请读取当前角色后再开始。"})
+                return
         team_mode=control.team_config.get('mode','solo')
         if team_mode!='solo':
             from dungeon_farm.team_link import TeamLink
@@ -327,7 +418,7 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
             if control.team_link:
                 control.team_link.update(round=completed+1,phase='idle',active=False,ready_for=None)
                 control.team_round=None
-            if dungeon in SUPPORTED_DUNGEONS:
+            if dungeon in SUPPORTED_DUNGEONS and team_mode!='follower':
                 outcome=prepare(control,emit,allow_town_entry=allow_town_entry,dungeon=dungeon,difficulty=difficulty)
                 while outcome=='waiting_dungeon' and not control.stop.is_set():
                     emit({'state':'waiting_dungeon'})
@@ -353,6 +444,9 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
             import shutil
             if (DATA/'gui-run.jsonl').exists():shutil.copyfile(DATA/'gui-run.jsonl',archive/f'{int(round_start)}.jsonl')
             if not again:break
+            if outcome=='town_reentry' and team_mode=='solo':
+                allow_town_entry=True;control.exit_choice=None
+                continue
             if outcome!='reentered':break
             control.exit_choice=None
         else:outcome='stopped'

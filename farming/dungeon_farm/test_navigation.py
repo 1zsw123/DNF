@@ -3,6 +3,85 @@ from dungeon_farm.navigation import Navigator
 
 
 class NavigationTests(unittest.TestCase):
+    def test_retreat_routes_around_enemy_instead_of_through_it(self):
+        n=Navigator();move=n.steer('r',(100,240),(500,240),0,avoid=((300,240),),floor_bounds=(120,360))
+        self.assertTrue({'up','down'}&move)
+        self.assertTrue(any(abs(y*20-240)>=80 for x,y in n.path))
+        self.assertTrue(all(120<=y*20<=360 for x,y in n.path))
+        self.assertEqual(n.contacts,set())
+
+    def test_enemy_avoidance_is_temporary_and_keeps_real_walls(self):
+        n=Navigator();n.reset('r');n.contacts={(40,10)};n.blocked=set(n.contacts)
+        n.steer('r',(100,240),(500,240),0,avoid=((300,240),),floor_bounds=(120,360))
+        self.assertTrue(n.danger)
+        n.steer('r',(100,240),(500,240),.1)
+        self.assertFalse(n.danger);self.assertIsNone(n.floor_bounds)
+        self.assertEqual(n.contacts,{(40,10)})
+
+    def test_corner_escape_uses_available_upper_floor(self):
+        n=Navigator();move=n.steer('r',(0,366),(370,366),0,
+                                  avoid=((90,355),(300,200)),floor_bounds=(200,366))
+        self.assertIn('up',move);self.assertFalse(n.no_path)
+
+    def test_incomplete_floor_band_does_not_make_a_false_trap(self):
+        n=Navigator();n.reset('r');n.contacts={(10,10)};n.blocked=set(n.contacts)
+        move=n.steer('r',(100,200),(300,200),0,avoid=((400,200),),floor_bounds=(200,200))
+        self.assertTrue(move);self.assertFalse(n.no_path)
+        self.assertIn((10,10),n.contacts)
+
+    def test_separate_combat_retreats_do_not_accumulate_route_failure(self):
+        n=Navigator();n.reset('r');n.contacts={(50,10)};n.blocked=set(n.contacts)
+        for cycle in range(60):
+            for step in range(9):
+                n.steer('r',(420+step*3,320),(600,320),cycle*3+step*.1)
+                self.assertFalse(n.no_path)
+            n.pause()
+        self.assertEqual(n.replans,0)
+        self.assertEqual(n.stalled_for,0)
+        self.assertIn((50,10),n.contacts)
+
+    def test_temporary_mid_room_lock_is_rechecked_without_pausing_run(self):
+        n=Navigator();p=[895.,208.]
+        # The observed failure: four apparent contacts in ~2 s after combat.
+        # Movement becomes available again once the transient lock ends.
+        recovered=False
+        for i in range(400):
+            now=i*.02
+            move=n.steer('r',p,(805,197),now)
+            self.assertFalse(n.no_path)
+            recovered |= n.recovery_attempts>0
+            if now>=2.6:
+                p[0]+=3*(('right' in move)-('left' in move))
+                p[1]+=3*(('down' in move)-('up' in move))
+            if abs(p[0]-805)<8 and abs(p[1]-197)<8:break
+        self.assertTrue(recovered)
+        self.assertLess(abs(p[0]-805),8)
+        self.assertLess(abs(p[1]-197),8)
+
+    def test_local_recovery_preserves_old_distant_contacts(self):
+        n=Navigator();n.reset('r')
+        n.contacts={(30,10)};n.blocked=set(n.contacts)
+        n.contact_times={(30,10):-100}
+        for i in range(115):n.steer('r',(100,200),(300,200),i*.02)
+        self.assertIsNotNone(n.recovery_until)
+        for i in range(115,160):n.steer('r',(100,200),(300,200),i*.02)
+        self.assertIn((30,10),n.contacts)
+
+    def test_initial_loading_lock_does_not_invent_four_walls(self):
+        n=Navigator(entry_grace=3)
+        for i in range(29):n.steer('new',(677,113),(677,255),i*.1)
+        self.assertEqual(n.contacts,set());self.assertFalse(n.no_path)
+        n.steer('new',(677,140),(677,255),3)
+        self.assertEqual(n.collisions,0)
+        n.reset('next');self.assertEqual(n.entry_grace,3)
+
+    def test_entry_grace_still_detects_a_real_trap(self):
+        n=Navigator(entry_grace=3)
+        for i in range(1300):
+            n.steer('r',(100,200),(500,200),i*.02)
+            if n.no_path:break
+        self.assertTrue(n.no_path)
+
     def test_speculative_padding_does_not_seal_a_narrow_passage(self):
         n=Navigator();n.reset('r')
         n.blocked={(x,y) for x in range(4,7) for y in range(9,12)}-{(5,10)}
@@ -72,6 +151,17 @@ class NavigationTests(unittest.TestCase):
         n=Navigator();n.steer('a',(100,200),(300,200),0)
         n.pause();n.steer('a',(100,200),(300,200),5)
         self.assertEqual(n.collisions,0)
+
+    def test_retreat_replans_blocked_step_within_two_tenths(self):
+        n=Navigator(entry_grace=3)
+        first=n.steer('a',(100,200),(400,200),0,urgent=True)
+        self.assertEqual(first,frozenset({'right'}))
+        changed=n.steer('a',(100,200),(400,200),.2,urgent=True)
+        self.assertEqual(n.collisions,1)
+        self.assertNotEqual(changed,first)
+        self.assertTrue(changed)
+        self.assertFalse(n.contacts)
+        self.assertTrue(n.temporary_contacts)
 
     def test_scene_change_discards_old_obstacles(self):
         n=Navigator();n.reset('a');n.blocked.add((10,10))
