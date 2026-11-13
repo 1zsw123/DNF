@@ -3,10 +3,6 @@
   "threshold": 0.67,
   "door_grace": 4.0,
   "auto_run": true,
-  "self_names": [
-    "上头召唤师"
-  ],
-  "leader_names": [
-    "上头狂战"
-  ]
+  "self_names": [],
+  "leader_names": []
 }

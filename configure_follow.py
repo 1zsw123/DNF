@@ -7,12 +7,13 @@ import runpy
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from follow_profiles import with_names,load_profile,save_profile
 
 ROOT = Path(__file__).resolve().parent
 VERIFIED_BUILD = '22772f28c768f4512a44ad8a228519417653e4309534c5c84de69cc860d8878a'
 
 
-def make_profile(client_path, self_name='上头召唤师', leader_name='上头狂战'):
+def make_profile(client_path, self_name, leader_name):
     path = Path(client_path).expanduser().resolve(strict=True)
     if path.name.lower() != 'dnf.exe':
         raise ValueError('请选择游戏目录里的 DNF.exe，不是启动器。')
@@ -23,29 +24,28 @@ def make_profile(client_path, self_name='上头召唤师', leader_name='上头�
     own, leader = self_name.strip(), leader_name.strip()
     if not own or not leader or own == leader:
         raise ValueError('两个人物名必须完整、非空且互不相同。')
-    return {
+    return with_names({
         'enabled': True, 'automatic_reconnect': True,
         'client_path': str(path), 'client_sha256': VERIFIED_BUILD,
         'self_name': own, 'leader_name': leader,
-        # Validated role types of this pair, not a universal class-name table.
-        'role_types': {own: 0x016FC11C, leader: 0x016F972C},
         'self_yolo_compatible': False, 'leader_yolo_compatible': False,
-    }
+    },own,leader)
 
 
 def configure():
     result = False
     root = tk.Tk()
-    root.title('DNF 跟随 · 首次配置')
+    root.title('DNF 跟随 · 路径与角色配置')
     root.geometry('620x310')
     root.resizable(False, False)
     panel = ttk.Frame(root, padding=18)
     panel.pack(fill='both', expand=True)
-    ttk.Label(panel, text='另一台电脑：召唤师跟随狂战', font=('Microsoft YaHei UI', 15, 'bold')).pack(anchor='w')
-    ttk.Label(panel, text='选择本机 DNF.exe。角色外观类型按已经验证的这一对配置。').pack(anchor='w', pady=(8,12))
-    client = tk.StringVar()
-    own = tk.StringVar(value='上头召唤师')
-    leader = tk.StringVar(value='上头狂战')
+    ttk.Label(panel, text='设置本机小号与带队大号', font=('Microsoft YaHei UI', 15, 'bold')).pack(anchor='w')
+    ttk.Label(panel, text='完整输入名字；以后可在主界面直接修改或交换。').pack(anchor='w', pady=(8,12))
+    previous=load_profile(ROOT)
+    client = tk.StringVar(value=previous.get('client_path',''))
+    own = tk.StringVar(value=previous.get('self_name',''))
+    leader = tk.StringVar(value=previous.get('leader_name',''))
     row = ttk.Frame(panel); row.pack(fill='x')
     ttk.Entry(row, textvariable=client, width=65).pack(side='left', fill='x', expand=True)
     def browse():
@@ -60,12 +60,7 @@ def configure():
         nonlocal result
         try:
             profile = make_profile(client.get(), own.get(), leader.get())
-            target = ROOT / 'coordinate-session.json'
-            if target.exists():
-                (ROOT / 'coordinate-session.previous.json').write_bytes(target.read_bytes())
-            temp = ROOT / 'coordinate-session.new.json'
-            temp.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding='utf-8')
-            temp.replace(target)
+            save_profile(ROOT,profile)
             result = True
             root.destroy()
         except (OSError, ValueError) as exc:
@@ -76,7 +71,7 @@ def configure():
 
 
 def main():
-    if '--configure' in sys.argv or not (ROOT/'coordinate-session.json').exists():
+    if '--configure' in sys.argv or not load_profile(ROOT):
         if not configure(): return
     runpy.run_path(str(ROOT/'yolo_follow.py'), run_name='__main__')
 

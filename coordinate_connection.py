@@ -30,7 +30,8 @@ def connect_verified(pid, profile):
         return DungeonTelemetry(pid, process=process, module_base=base,
                                 self_name=profile.get('self_name','上头影刃'),
                                 leader_name=profile.get('leader_name','上头狂战'),
-                                role_types=profile.get('role_types'))
+                                role_types=profile.get('role_types'),
+                                automatic_role_types=profile.get('automatic_role_types',False))
     except BaseException:
         process.close()
         raise
@@ -81,7 +82,8 @@ class CoordinateConnection:
             self.status = '坐标读取中断，等待重新连接'
             self.retry_at = now + 1
             return None
-        self.status = '坐标已连接' if result else '已连接客户端，等待有效副本角色'
+        reason = getattr(self.reader, 'last_status', None)
+        self.status = '坐标已连接' if result else (reason if isinstance(reason, str) else '已连接客户端，等待有效副本角色')
         if result:
             result['connection_generation'] = self.generation
         return result

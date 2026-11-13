@@ -42,6 +42,23 @@ class TelemetryTests(unittest.TestCase):
         s = self.r.sample()
         self.assertEqual(s['leader'], (559, 244, 0))
         self.assertEqual(follow_directions(s), ({'right', 'up'}, True))
+
+    def test_dynamic_pair_accepts_new_names_types_and_rejects_nonplayer_or_stale(self):
+        for address,name,vt in ((self.own,'新小号',0x16fb6a4),(self.leader,'新大号',0x16fa214)):
+            self.p.put(address,struct.pack('<I',vt))
+            self.p.put(address+0x90,struct.pack('<I',273))
+            self.p.put(address+0x1000,(name+'\0').encode('utf-16le').ljust(64,b'\0'))
+        r=DungeonTelemetry(1,self.p,self_name='新小号',leader_name='新大号',role_types={},automatic_role_types=True)
+        self.assertEqual(r.sample()['leader_name'],'新大号')
+        self.p.put(self.leader+0x90,struct.pack('<I',529))
+        self.assertIsNone(r.sample())
+        self.p.put(self.leader+0x90,struct.pack('<I',273))
+        self.set_list([self.own]);self.assertIsNone(r.sample())
+
+    def test_dynamic_wrong_local_name_never_reverses_the_pair(self):
+        for address in (self.own,self.leader):self.p.put(address+0x90,struct.pack('<I',273))
+        r=DungeonTelemetry(1,self.p,self_name='上头狂战',leader_name='上头影刃',role_types={},automatic_role_types=True)
+        self.assertIsNone(r.sample())
     def test_stale_town_position_is_rejected(self):
         self.p.put(LOCAL_XYZ, struct.pack('<3f', 923, 161, 0))
         self.assertIsNone(self.r.sample())

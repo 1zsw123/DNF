@@ -15,9 +15,11 @@ ROLE_TYPES = {'上头影刃': 0x016FC11C, '上头狂战': 0x016F972C}
 
 class DungeonTelemetry:
     def __init__(self, pid, process=None, module_base=0x400000,
-                 self_name='上头影刃', leader_name='上头狂战', role_types=None):
+                 self_name='上头影刃', leader_name='上头狂战', role_types=None, automatic_role_types=False):
         types = ROLE_TYPES if role_types is None else role_types
-        if self_name == leader_name or set(types) != {self_name, leader_name}:
+        self.automatic_role_types=automatic_role_types
+        self.role_names={self_name,leader_name}
+        if not self_name or not leader_name or self_name == leader_name or (not automatic_role_types and set(types) != self.role_names):
             raise ValueError('角色配置必须包含不同的小号和大号')
         if not all(isinstance(v, int) and 0x400000 <= v < 0x4000000 for v in types.values()):
             raise ValueError('角色类型配置无效')
@@ -38,14 +40,15 @@ class DungeonTelemetry:
         if not raw:
             return None
         vt = struct.unpack_from('<I', raw)[0]
-        if vt not in self.role_types.values() or struct.unpack_from('<I', raw, 0xb8)[0] != scene:
+        valid_type=(struct.unpack_from('<I',raw,0x90)[0]==273 and 0x400000<=vt-self.delta<0x4000000) if self.automatic_role_types else vt in self.role_types.values()
+        if not valid_type or struct.unpack_from('<I', raw, 0xb8)[0] != scene:
             return None
         nameptr = struct.unpack_from('<I', raw, 0x258)[0]
         namebytes = self.process.read(nameptr, 64) if nameptr else None
         if not namebytes:
             return None
         name = namebytes.decode('utf-16le', errors='replace').split('\0', 1)[0]
-        if self.role_types.get(name) != vt:
+        if name not in self.role_names or (not self.automatic_role_types and self.role_types.get(name) != vt):
             return None
         xyz = struct.unpack_from('<3f', raw, 0x18c)
         if not all(math.isfinite(v) and abs(v) < 100000 for v in xyz):
@@ -66,10 +69,15 @@ class DungeonTelemetry:
 
     def sample(self):
         started = time.monotonic()
+        self.last_status = '已连接客户端，等待有效副本角色'
         local = self.uint(self.local_root)
         scene = self.uint(local + 0xb8) if local else 0
+        if not scene:
+            self.last_status = '当前无副本场景，等待进图或切图完成'
+            return None
         own = self.actor(local, scene) if scene else None
         if not own or own['name'] != self.self_name:
+            self.last_status = '等待确认本机小号：' + self.self_name
             return None
         addresses = self.object_addresses(scene)
         if not addresses:
@@ -83,7 +91,8 @@ class DungeonTelemetry:
                 if actor['name'] in roles:
                     return None  # Ambiguous identities must not drive the follower.
                 roles[actor['name']] = actor
-        if set(roles) != set(self.role_types):
+        if set(roles) != self.role_names:
+            self.last_status = '小号已确认，等待同房大号：' + self.leader_name
             return None
         # Combat effects add/remove unrelated objects every frame. Revalidate
         # membership of this pair in a fresh list instead of requiring the list
