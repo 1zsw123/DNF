@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from dungeon_farm.resources import orb_fill,need_recovery,RecoveryBudget
+from dungeon_farm.resources import orb_fill,need_recovery,RecoveryBudget,potion_limit
 
 class ResourceTests(unittest.TestCase):
     def test_one_potion_budget_even_if_health_stays_low(self):
@@ -11,6 +11,20 @@ class ResourceTests(unittest.TestCase):
         self.assertFalse(budget.available(low,.1))
         self.assertFalse(budget.available({'hp_fill':0,'mp_fill':.8},.1))
         self.assertTrue(RecoveryBudget().available(low,.1))
+    def test_unlimited_budget_keeps_recovering_while_health_is_low(self):
+        budget=RecoveryBudget(limit=None)
+        low={'hp_fill':.3,'mp_fill':.8}
+        for _ in range(20):
+            self.assertTrue(budget.available(low,.1));budget.sent()
+        self.assertFalse(budget.available({'hp_fill':.6,'mp_fill':.8},.1))
+        self.assertFalse(budget.available({'hp_fill':0,'mp_fill':0},.1))
+    def test_berserker_defaults_to_no_cap_others_keep_one(self):
+        self.assertIsNone(potion_limit({'rotation':'狂战士'}))
+        self.assertIsNone(potion_limit(None))
+        self.assertEqual(potion_limit({'rotation':'风神冷却优先'}),1)
+        self.assertEqual(potion_limit({'rotation':'狂战士','potion_limit':'3'}),3)
+        self.assertIsNone(potion_limit({'rotation':'机械之心召唤轮换','potion_limit':'不限'}))
+        with self.assertRaises(ValueError):potion_limit({'potion_limit':'99'})
     def frame(self,hp,mp):
         frame=np.zeros((480,640,3),dtype=np.uint8)
         frame[460-round(hp*40):460,22:38,2]=150

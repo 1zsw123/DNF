@@ -61,6 +61,8 @@ def validate_character(entry):
         raise ValueError('请用“读取当前角色”取得角色类型')
     if entry.get('rotation') not in ROTATIONS: raise ValueError('技能方案无效')
     if entry.get('potion_key','3') not in ('1','2','3'): raise ValueError('血药键须为 1、2 或 3')
+    from dungeon_farm.resources import potion_limit
+    potion_limit(entry)
     from dungeon_farm.inventory import material_cell
     material_cell(entry)
 
@@ -104,7 +106,7 @@ def discover_current():
     finally: reader.close()
 
 
-def character_planner(character=None, dual_blades_active=True):
+def character_planner(character=None, dual_blades_active=False):
     if character and character['rotation']=='机械之心召唤轮换':
         from dungeon_farm.mechanic_rotation import make_planner
         return make_planner(entry_helper=character.get('entry_helper',False))

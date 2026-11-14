@@ -166,4 +166,13 @@ class ScreenSignals:
                     signals['east_selected']=True
                     signals['target_selected']=True
         return signals
+    def read_texts(self,win,hwnd):
+        """Full-frame OCR: [(centre_xy_in_640x480, normalized_text, confidence)]."""
+        rect=win.rect(hwnd)
+        if not rect or not win.foreground(hwnd): return None
+        raw=np.asarray(self.capture.grab(rect))[:,:,:3]
+        frame=cv2.resize(raw,(640,480))
+        found,_=self.ocr(cv2.resize(frame,None,fx=1.5,fy=1.5))
+        return [(tuple(float(v) for v in (np.asarray(box,dtype=float)/1.5).mean(axis=0)),normalize(text),float(conf))
+                for box,text,conf in found or []]
     def close(self): self.capture.close()

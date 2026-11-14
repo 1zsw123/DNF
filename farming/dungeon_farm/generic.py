@@ -29,6 +29,32 @@ def combined_preset(presets):
     return result
 
 
+class AllyGuess:
+    """Generic mode attacks unlisted human-type objects. If such guesses are
+    the only targets left and none of them dies for ``patience`` seconds,
+    they are allies after all: stop targeting those names for this run."""
+    def __init__(self,patience=25):
+        self.patience=patience;self.friends=set();self.sig=None;self.since=0
+
+    def filter(self,scene,enemies,guessed,now):
+        """Return (enemies_to_target, names_newly_treated_as_allies)."""
+        if not guessed:
+            self.sig=None
+            return tuple(enemies),()
+        kept=tuple(e for e in enemies if guessed.get(e.identity) not in self.friends)
+        if kept and all(e.identity in guessed for e in kept):
+            sig=(scene,frozenset(e.identity for e in kept))
+            if sig!=self.sig:
+                self.sig=sig;self.since=now
+            elif now-self.since>self.patience:
+                names=tuple(sorted({guessed[e.identity] for e in kept}))
+                self.friends.update(names);self.sig=None
+                return (),names
+        else:
+            self.sig=None
+        return kept,()
+
+
 def room_ready(signals,sample,doors,old_scene=None):
     # A verified local actor with a non-town scene and real exit objects is
     # required. A title or a minimap-looking town panel alone is insufficient.

@@ -1,16 +1,32 @@
 """Estimate the fixed HUD orb fill; never identify or use arbitrary items."""
 import numpy as np
 
+POTION_LIMITS=('1','2','3','5','10','不限')
+
 class RecoveryBudget:
-    """One potion input per dungeon run, including retries after revival."""
+    """Potion inputs per dungeon run, including retries after revival.
+
+    ``limit=None`` means no per-run cap; the runtime still spaces inputs."""
     def __init__(self, limit=1):
         self.limit=limit;self.used=0
 
     def available(self, resources, age):
-        return self.used<self.limit and need_recovery(resources,age)
+        return (self.limit is None or self.used<self.limit) and need_recovery(resources,age)
 
     def sent(self):
         self.used+=1
+
+def potion_limit(character):
+    """Per-run potion cap for a character: an int, or None for no cap.
+
+    The berserker scheme defaults to no cap; other schemes keep the earlier
+    one-potion-per-run default unless the character sets ``potion_limit``."""
+    character=character or {}
+    value=character.get('potion_limit')
+    if value is None:
+        value='不限' if character.get('rotation','狂战士')=='狂战士' else '1'
+    if value not in POTION_LIMITS:raise ValueError('每局血药上限无效')
+    return None if value=='不限' else int(value)
 
 def orb_fill(frame):
     def fill(x,channel):

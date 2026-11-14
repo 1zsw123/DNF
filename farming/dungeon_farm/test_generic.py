@@ -132,3 +132,38 @@ class GenericTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class AllyGuessTests(unittest.TestCase):
+    def test_unlisted_human_enemy_is_targeted_until_it_dies(self):
+        from dungeon_farm.generic import AllyGuess
+        from dungeon_farm.planner import Enemy
+        g=AllyGuess()
+        mia=Enemy('0x1',166,311);imp=Enemy('0x2',100,200)
+        kept,allies=g.filter('r1',(mia,imp),{'0x1':'德魯伊·梅亞'},0)
+        self.assertEqual(kept,(mia,imp))
+        kept,allies=g.filter('r1',(mia,),{'0x1':'德魯伊·梅亞'},10)
+        self.assertEqual(kept,(mia,))
+        kept,allies=g.filter('r1',(),{},12)  # it died
+        self.assertEqual((kept,allies),((),()))
+
+    def test_guess_that_never_dies_is_treated_as_ally(self):
+        from dungeon_farm.generic import AllyGuess
+        from dungeon_farm.planner import Enemy
+        g=AllyGuess(patience=25);npc=Enemy('0x9',50,50)
+        g.filter('r1',(npc,),{'0x9':'某NPC'},0)
+        self.assertEqual(g.filter('r1',(npc,),{'0x9':'某NPC'},20)[0],(npc,))
+        kept,allies=g.filter('r1',(npc,),{'0x9':'某NPC'},26)
+        self.assertEqual((kept,allies),((),('某NPC',)))
+        # Later rooms in this run: the same name is no longer targeted.
+        other=Enemy('0xa',10,10)
+        self.assertEqual(g.filter('r2',(Enemy('0xb',1,1),other),{'0xb':'某NPC'},30)[0],(other,))
+
+    def test_clock_does_not_run_while_real_monsters_remain(self):
+        from dungeon_farm.generic import AllyGuess
+        from dungeon_farm.planner import Enemy
+        g=AllyGuess(patience=25);npc=Enemy('0x9',50,50);imp=Enemy('0x2',1,1)
+        for t in range(0,60,5):
+            kept,allies=g.filter('r1',(npc,imp),{'0x9':'某NPC'},t)
+            self.assertEqual(allies,())
+        self.assertEqual(g.filter('r1',(npc,),{'0x9':'某NPC'},61)[0],(npc,))

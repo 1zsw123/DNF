@@ -31,3 +31,12 @@ class WaveTests(unittest.TestCase):
         w.reset()
         self.assertEqual(w.number,1)
         self.assertFalse(w.update(False,30)[0])
+
+
+class ShortSettleTests(unittest.TestCase):
+    def test_solo_settle_is_short_but_late_spawn_still_revokes(self):
+        from dungeon_farm.waves import WaveTracker
+        w=WaveTracker(settle_seconds=.8)
+        self.assertEqual(w.update(False,0),(False,False))
+        self.assertEqual(w.update(False,.8),(True,False))
+        self.assertEqual(w.update(True,1.0),(False,True))

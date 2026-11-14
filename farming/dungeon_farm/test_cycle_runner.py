@@ -77,11 +77,21 @@ class RunnerTests(unittest.TestCase):
             result=json.loads((Path(folder)/'farming-results.jsonl').read_text(encoding='utf8'))
             self.assertEqual(result['difficulty'],'普通级')
             self.assertIsNone(result['net_gold'])
-    def test_high_difficulty_is_rejected_before_input(self):
+    def test_unknown_difficulty_is_rejected_before_input(self):
         with tempfile.TemporaryDirectory() as folder, patch('dungeon_farm.runtime.DATA',Path(folder)), patch('dungeon_farm.town_entry.prepare') as entry:
-            updates=[];run(Control(),'追击歼灭战',updates.append,difficulty='地狱级',allow_town_entry=True)
+            updates=[];run(Control(),'追击歼灭战',updates.append,difficulty='噩梦级',allow_town_entry=True)
             entry.assert_not_called()
             self.assertEqual(updates[-1]['result'],'error')
+    def test_king_and_hell_difficulty_are_selectable(self):
+        for level in ('王者级','地狱级'):
+            with tempfile.TemporaryDirectory() as folder, patch('dungeon_farm.runtime.DATA',Path(folder)), \
+                 patch('dungeon_farm.town_entry.prepare',return_value='ready') as entry, \
+                 patch('dungeon_farm.runtime.run_round',return_value={'result':'finished','scene':123,'profile':{}}), \
+                 patch('dungeon_farm.cycle.replay',return_value='finished'):
+                updates=[];run(Control(),'追击歼灭战',updates.append,repeat=True,max_runs=1,difficulty=level)
+                self.assertEqual(entry.call_args.kwargs['difficulty'],level)
+                self.assertEqual(updates[-1]['result'],'finished')
+                self.assertEqual(json.loads((Path(folder)/'farming-results.jsonl').read_text(encoding='utf8'))['difficulty'],level)
     def test_repeat_stops_at_fatigue_error_after_verified_reentry(self):
         with tempfile.TemporaryDirectory() as folder, patch('dungeon_farm.runtime.DATA',Path(folder)), \
              patch('dungeon_farm.town_entry.prepare',return_value='ready'), \
@@ -99,6 +109,7 @@ class RunnerTests(unittest.TestCase):
              patch('dungeon_farm.town_entry.prepare',return_value='ready'), \
              patch('dungeon_farm.runtime.run_round',return_value={'result':'unknown_monsters'}) as fight, \
              patch('dungeon_farm.cycle.replay') as replay:
-            updates=[];run(Control(),'根特东门',updates.append,repeat=True)
+            control=Control();control.auto_recover=False  # old stop-on-problem behaviour
+            updates=[];run(control,'根特东门',updates.append,repeat=True)
             replay.assert_not_called();self.assertEqual(fight.call_count,1)
             self.assertEqual(updates[-1]['completed'],0)

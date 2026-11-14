@@ -7,7 +7,7 @@ import queue
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
-from dungeon_farm.runtime import Control, run
+from dungeon_farm.runtime import Control, run, DIFFICULTIES
 from dungeon_farm.utilities import maintenance
 from dungeon_farm.characters import load_characters, save_characters, discover_current, ROTATIONS
 
@@ -45,7 +45,10 @@ STATES={
  'inventory_checked':'已核对金币与无色库存','inspect_inventory':'正在核对金币与无色库存',
  'inventory_after_maintenance':'已记录维护后的余额',
  'round_statistics':'本局收益已记录',
- 'recovering':'血量低于 50%，使用本局唯一一次血药',
+ 'recovering':'血量低于 50%，使用血药',
+ 'auto_reentry':'出现问题，自动退出副本后重新进入','leaving_dungeon':'正在退出副本',
+ 'left_dungeon':'已回到城镇，准备重新入场','exit_failed':'自动退出副本失败，已停止',
+ 'stuck':'同一房间长时间没有进展，退出重进','apc_ignored':'人形对象打不掉，按友方NPC处理','blind_combat':'暂时读不到怪物坐标，原地继续出招',
  'revive':'确认死亡，按 X 复活','waiting_revive':'已按 X，等待复活',
  'revived':'已复活，恢复战斗','revive_failed':'按 X 后仍未复活，已停止',
  'revive_unconfirmed':'复活后未收到新画面，已停止并等待检查',
@@ -55,7 +58,7 @@ STATES={
  'wrong_character':'游戏角色与所选方案不符，请点击“读取当前角色”',
  'waiting_dungeon':'请进目标副本，或使用自动入场按钮',
  'waiting_manual_entry':'通用模式待命：请手动进入要刷的副本',
- 'difficulty_unconfirmed':'所选难度尚未确认，未发送入场键',
+ 'difficulty_unconfirmed':'所选难度尚未确认（王者/地狱可能未解锁或缺少入场道具），未发送入场键',
  'team_connecting':'正在建立双机组队连接',
  'waiting_partner':'等待队友连接或靠近门口',
  'following':'清场后前往大号所在门口','following_close':'已在大号门口集合',
@@ -98,7 +101,7 @@ class App:
         try:
             prefs=json.loads((DATA/'gui-preferences.json').read_text(encoding='utf8'))
             if prefs.get('dungeon') in self.presets:self.selected.set(prefs['dungeon'])
-            if prefs.get('difficulty') in ('普通级','冒险级','勇士级'):self.difficulty.set(prefs['difficulty'])
+            if prefs.get('difficulty') in DIFFICULTIES:self.difficulty.set(prefs['difficulty'])
             if 0<=int(prefs.get('runs',1))<=100:self.run_limit.set(str(prefs.get('runs',1)))
             if prefs.get('character') in [c['name'] for c in self.characters]:self.character_name.set(prefs['character'])
         except (OSError,ValueError,TypeError):pass
@@ -126,16 +129,19 @@ class App:
         self.mode=ttk.Checkbutton(row,text='单人模式',variable=self.solo);self.mode.pack(side='right')
         options=ttk.Frame(panel);options.pack(fill='x',pady=(8,0))
         ttk.Label(options,text='难度').pack(side='left',padx=(0,12))
-        self.difficulties=ttk.Combobox(options,textvariable=self.difficulty,values=['普通级','冒险级','勇士级'],state='readonly',width=10)
+        self.difficulties=ttk.Combobox(options,textvariable=self.difficulty,values=list(DIFFICULTIES),state='readonly',width=10)
         self.difficulties.pack(side='left')
         ttk.Label(options,text='  局数（0=直到疲劳不足）').pack(side='left')
         self.limits=ttk.Spinbox(options,from_=0,to=100,textvariable=self.run_limit,width=4);self.limits.pack(side='left')
         self.repeat=tk.BooleanVar(value=True)
         self.repeat_box=ttk.Checkbutton(panel,text='自动连续挑战 · 不足分解 / 够用卖装 → 修理 → F10',variable=self.repeat)
         self.repeat_box.pack(anchor='w',pady=(10,0))
-        self.dual_active=tk.BooleanVar(value=True)
+        self.recover=tk.BooleanVar(value=True)
+        self.recover_box=ttk.Checkbutton(panel,text='出问题自动退出副本并重新进入（连续失败3次才停）',variable=self.recover)
+        self.recover_box.pack(anchor='w',pady=(4,0))
+        self.dual_active=tk.BooleanVar(value=False)
         character_options=ttk.Frame(panel);character_options.pack(fill='x',pady=(4,0))
-        self.dual_box=ttk.Checkbutton(character_options,text='狂战士专用：双刀当前已开',variable=self.dual_active)
+        self.dual_box=ttk.Checkbutton(character_options,text='狂战士：双刀已经开着（勾上则开打时不再按H）',variable=self.dual_active)
         self.dual_box.pack(side='left')
         self.supplies_button=ttk.Button(character_options,text='血药、人偶与无色',command=self.configure_supplies,padding=(8,3))
         self.supplies_button.pack(side='right')
@@ -215,12 +221,18 @@ class App:
         body=ttk.Frame(dialog,padding=18);body.pack(fill='both',expand=True)
         enabled=tk.BooleanVar(value=self.auto_potion.get())
         key=tk.StringVar(value=entry.get('potion_key','3'))
+        from dungeon_farm.resources import potion_limit,POTION_LIMITS
+        current_limit=potion_limit({**entry,'rotation':self.rotation.get()})
+        limit=tk.StringVar(value='不限' if current_limit is None else str(current_limit))
         helper=tk.BooleanVar(value=entry.get('entry_helper',False))
         cube_row=tk.IntVar(value=entry.get('cube_row',1));cube_column=tk.IntVar(value=entry.get('cube_column',1))
-        ttk.Checkbutton(body,text='启用血药：低于50%才用，每局最多1瓶',variable=enabled).pack(anchor='w')
+        ttk.Checkbutton(body,text='启用血药：血量低于50%自动使用，两次间隔约10秒',variable=enabled).pack(anchor='w')
         row=ttk.Frame(body);row.pack(fill='x',pady=10)
         ttk.Label(row,text='血药快捷键').pack(side='left',padx=(0,12))
         ttk.Combobox(row,textvariable=key,values=('1','2','3'),state='readonly',width=5).pack(side='left')
+        ttk.Label(row,text='  每局最多').pack(side='left')
+        ttk.Combobox(row,textvariable=limit,values=POTION_LIMITS,state='readonly',width=5).pack(side='left')
+        ttk.Label(row,text='瓶').pack(side='left')
         ttk.Checkbutton(body,text='每局进图按一次4召唤人偶',variable=helper).pack(anchor='w')
         cube=ttk.Frame(body);cube.pack(fill='x',pady=10)
         ttk.Label(cube,text='无色在材料栏：第').pack(side='left')
@@ -230,7 +242,7 @@ class App:
         ttk.Label(cube,text='列（从左上角数）').pack(side='left')
         ttk.Label(body,text='请在游戏中核对：所选格子是血药，4号位是人偶。\n药用完后该格可能被自动拾取的物品占用。\n设置仅保存到当前角色，其他角色不变。',wraplength=430,foreground='#5b6b80').pack(anchor='w',pady=12)
         def save():
-            entry.update(auto_potion=enabled.get(),potion_key=key.get(),entry_helper=helper.get(),rotation=self.rotation.get(),cube_row=cube_row.get(),cube_column=cube_column.get())
+            entry.update(auto_potion=enabled.get(),potion_key=key.get(),potion_limit=limit.get(),entry_helper=helper.get(),rotation=self.rotation.get(),cube_row=cube_row.get(),cube_column=cube_column.get())
             save_characters(self.characters);self.select_character()
             self.status.set('已保存 '+entry['name']+' 的血药与人偶设置');dialog.destroy()
         ttk.Button(body,text='保存',command=save).pack(side='right')
@@ -283,6 +295,7 @@ class App:
                                         '自动连续挑战 · 不足分解 / 够用卖装 → 修理 → F10'))
         if team_config.get('mode','solo')!='solo':self.solo.set(True)
         self.control.dual_blades_active=self.dual_active.get()
+        self.control.auto_recover=self.recover.get()
         self.worker=threading.Thread(target=run,args=(self.control,self.selected.get(),self.messages.put),kwargs={'solo':self.solo.get(),'repeat':self.repeat.get(),'difficulty':self.difficulty.get(),'allow_town_entry':enter,'max_runs':run_limit or None},daemon=False)
         self.maps.configure(state='disabled');self.mode.configure(state='disabled')
         self.repeat_box.configure(state='disabled')

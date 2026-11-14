@@ -9,6 +9,7 @@ from dataclasses import replace
 from follow import Windows, C
 from coordinate_connection import CoordinateConnection
 from dungeon_farm.combat_inputs import CombatInputs
+from dungeon_farm import combat_telemetry
 from dungeon_farm.combat_telemetry import observe, connect_solo
 from dungeon_farm.planner import FarmPlanner, Skill, Decision,attack_still_valid
 from dungeon_farm.navigation import Navigator
@@ -17,24 +18,28 @@ from dungeon_farm.screen_signals import ScreenSignals
 from dungeon_farm.waves import WaveTracker
 from dungeon_farm.exploration import RoomExplorer
 from dungeon_farm.berserker_rotation import make_planner
-from dungeon_farm.resources import need_recovery, RecoveryBudget
+from dungeon_farm.resources import need_recovery, RecoveryBudget, potion_limit
 from dungeon_farm.background_signals import BackgroundSignals
 from dungeon_farm.revival import Revival
 from dungeon_farm.door_approach import DoorApproach
 from dungeon_farm.characters import selected_profile, character_planner
 from dungeon_farm.minimap import MinimapRoute,MinimapSignals
 from dungeon_farm.generic import GENERIC,combined_preset,boss_heading
+from dungeon_farm.hotbar import HotbarReader,CooldownTracker,slot_levels,slot_saturation
 
 ROOT=Path(__file__).resolve().parents[1]
 DATA=ROOT/'dungeon_farm'
 SUPPORTED_DUNGEONS=('根特东门','追击歼灭战','阿登高地',GENERIC)
+# Highest selectable is 地狱级. The run uses exactly the chosen level and never
+# raises it; town entry stops if the client does not show that level.
+DIFFICULTIES=('普通级','冒险级','勇士级','王者级','地狱级')
 
 class Control:
     def __init__(self):
         self.stop=threading.Event()
         self.paused=threading.Event()
         self.exit_choice=None
-        self.dual_blades_active=True
+        self.dual_blades_active=False  # unknown at start: press H once
         self.next_recovery=0
         self.inventory=None
         self.round_cube_upper=0
@@ -45,11 +50,13 @@ class Control:
         self.team_link=None
         self.team_round=None
         self.skill_last_used={}
+        self.auto_recover=True
+        self.hotbar_tracker=None
     def cancelled(self): return self.stop.is_set() or self.paused.is_set()
 
 def run_round(control,dungeon,report,solo=True,limit=1800):
     control.round_cube_upper=0
-    recovery_budget=RecoveryBudget(limit=1)
+    recovery_budget=RecoveryBudget(limit=potion_limit(control.character))
     presets=json.loads((DATA/'presets.json').read_text(encoding='utf-8'))
     generic=dungeon==GENERIC
     use_minimap=dungeon in ('阿登高地',GENERIC)
@@ -74,7 +81,17 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
     connection=CoordinateConnection(profile,connector=connect_party if team_mode!='solo' else connect_solo) if solo else CoordinateConnection(profile)
     keys=CombatInputs(win,all_skills=True);planner=character_planner(control.character,control.dual_blades_active)
     planner.last_used.update(control.skill_last_used)
-    nav=Navigator(entry_grace=3);screen=None;room=None;rooms=0;facing=None;waves=WaveTracker();explorer=RoomExplorer()
+    # Hotbar cooldown reading: spam planners skip slots that are cooling down
+    # and keys whose press visibly did not fire. Learned levels persist.
+    if getattr(control,'hotbar_tracker',None) is None:control.hotbar_tracker=CooldownTracker()
+    hotbar_reader=HotbarReader();hotbar_note=0;hotbar_failed=False
+    if getattr(planner,'spam',False):planner.hotbar=control.hotbar_tracker
+    last_progress=time.monotonic();progress_key=None
+    # Generic mode attacks unlisted human-type objects; one that is the only
+    # target left and never dies for 25 s is an unlisted ally: stop hitting it.
+    from dungeon_farm.generic import AllyGuess
+    ally_guess=AllyGuess()
+    nav=Navigator(entry_grace=3);screen=None;room=None;rooms=0;facing=None;waves=WaveTracker(settle_seconds=.8 if team_mode=='solo' else 3.5);explorer=RoomExplorer()
     doors=[];next_exit=None;exiting=None;destination=None;last_status=0;door_approach=DoorApproach()
     started=time.monotonic();manual_until=0;screen_checks=0;outcome='stopped'
     last_sample=None;last_obs=None;battle_started=None;resources=None;resources_time=0
@@ -83,6 +100,14 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
     lost_since=None;screen_epoch=time.monotonic();last_screen=0;revival=Revival()
     ignored_objects=set();was_retreat=False;resource_overlay=False
     log=(DATA/'gui-run.jsonl').open('w',encoding='utf-8')
+    last_valid=0;pending_since=None;traced={}
+    def trace(state,**more):
+        # Silent waits used to leave gaps in the run log; record them (rate
+        # limited) so a stall can be explained afterwards.
+        now=time.monotonic()
+        if now-traced.get(state,0)<.5:return
+        traced[state]=now
+        log.write(json.dumps({'time':time.time(),'scene':room,'state':state,**more},ensure_ascii=False)+'\n');log.flush()
     def emit(state,force=False,**more):
         nonlocal last_status
         now=time.monotonic()
@@ -104,13 +129,14 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 if link:link.update(active=False)
                 screen_epoch=now
                 win.release();nav.pause();waves.suspend()
-                emit('paused');control.stop.wait(.05);continue
+                trace('paused');emit('paused');control.stop.wait(.05);continue
             hwnd=win.game()
             if not hwnd or not win.foreground(hwnd):
                 revival.suspend(now)
                 if link:link.update(active=False)
                 screen_epoch=now
                 win.release();nav.pause();waves.suspend()
+                trace('waiting_game' if not hwnd else 'waiting_foreground')
                 emit('waiting_game' if not hwnd else 'waiting_foreground')
                 control.stop.wait(.08);continue
             if any(win.u.GetAsyncKeyState(vk)&0x8000 for vk in (0x1b,0x0d)):
@@ -119,8 +145,21 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
             if now<manual_until:
                 revival.suspend(now)
                 if link:link.update(active=False)
-                win.release();nav.pause();emit('manual');control.stop.wait(.04);continue
+                win.release();nav.pause();trace('manual');emit('manual');control.stop.wait(.04);continue
             if link:link.update(active=True,phase='combat')
+            if not hotbar_failed:
+                try:
+                    crop=hotbar_reader.read(win,hwnd)
+                    if crop is not None:
+                        control.hotbar_tracker.update(slot_levels(crop),time.monotonic(),slot_saturation(crop))
+                        hotbar_reader.save_sample(crop,DATA/'hotbar-sample.png')
+                except Exception as exc:
+                    hotbar_failed=True;control.hotbar_tracker.disabled=True
+                    trace('hotbar_error',detail=str(exc))
+                if time.monotonic()-hotbar_note>1:
+                    hotbar_note=time.monotonic()
+                    log.write(json.dumps({'time':time.time(),'scene':room,'state':'hotbar',**control.hotbar_tracker.snapshot(),
+                                          'gave_up':getattr(planner,'hotbar_gave_up',None)},ensure_ascii=False)+'\n');log.flush()
             screen_value=screen.read(after=screen_epoch)
             if screen_value and screen_value[0]>last_screen:
                 last_screen,_,signals=screen_value
@@ -166,17 +205,51 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
             pid=W.DWORD();win.u.GetWindowThreadProcessId(hwnd,C.byref(pid))
             value=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons,ignore_unknown=team_mode!='follower',generic_monsters=generic)
             if value is None:
+                scene_now=None
                 if last_sample and connection.reader:
                     reader=connection.reader;base=reader.uint(reader.local_root)
-                    if base and reader.uint(base+0xb8)==0:
+                    scene_now=reader.uint(base+0xb8) if base else None
+                    if base and scene_now==0:
                         lost_since=lost_since or time.monotonic()
                         if time.monotonic()-lost_since>5:
                             outcome='returned_town';emit('returned_town',True);break
                     else:lost_since=None
-                win.release();nav.pause();waves.suspend();emit('waiting_coordinates',detail=connection.status)
+                why=combat_telemetry.LAST_FAILURE
+                # A fight seen moments ago in this same room (e.g. during an
+                # awakening animation): keep attacking in place, no movement.
+                fighting=(last_obs is not None and last_sample is not None and scene_now==last_sample['scene']
+                          and (last_obs.enemies or last_sample.get('pending_enemies'))
+                          and time.monotonic()-last_valid<30 and hasattr(planner,'blind_step'))
+                nav.pause();waves.suspend()
+                if fighting:
+                    decision=planner.blind_step(time.monotonic())
+                    trace('blind_combat',reason=why)
+                    if decision and not control.cancelled():
+                        skill=next((s for s in planner.skills if s.key==decision.tap),None)
+                        success=keys.cast(skill,hwnd,control.cancelled) if skill else keys.tap(decision.tap,hwnd,control.cancelled)
+                        planner.acknowledge(decision,time.monotonic(),success)
+                        if success:
+                            log.write(json.dumps({'time':time.time(),'scene':room,'state':'blind_cast','tap':decision.tap,'action':decision.action,'reason':why},ensure_ascii=False)+'\n');log.flush()
+                    emit('blind_combat',detail='暂时读不到怪物坐标，原地继续出招')
+                    control.stop.wait(.02);continue
+                win.release();trace('waiting_coordinates',reason=why,detail=connection.status)
+                emit('waiting_coordinates',detail=connection.status)
                 control.stop.wait(.08);continue
             previous_obs=last_obs
-            obs,sample=value;last_sample=sample;last_obs=obs
+            obs,sample=value
+            guessed=sample.get('guessed_apcs') or {}
+            if guessed:
+                kept,allies=ally_guess.filter(obs.scene,obs.enemies,guessed,time.monotonic())
+                if allies:
+                    log.write(json.dumps({'time':time.time(),'scene':obs.scene,'state':'apc_ignored','names':list(allies)},ensure_ascii=False)+'\n');log.flush()
+                    emit('apc_ignored',True,detail='、'.join(allies)+' 打了25秒不掉，按友方NPC处理')
+                obs=replace(obs,enemies=kept)
+            last_sample=sample;last_obs=obs;last_valid=time.monotonic()
+            key_now=(obs.scene,len(obs.enemies))
+            if key_now!=progress_key:progress_key=key_now;last_progress=time.monotonic()
+            elif (getattr(control,'auto_recover',False) and team_mode=='solo'
+                  and time.monotonic()-last_progress>90):
+                outcome='stuck';emit('stuck',True,detail='同一房间90秒没有进展，退出副本重进');break
             if '偉大的杜爾夫' in sample.get('friendly_apcs',()):
                 planner.entry_applied.add('4')
             lost_since=None
@@ -232,7 +305,13 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 continue
             # Unclassified actors cannot prove a clear room on a follower's
             # arbitrary dungeon. A new wave immediately revokes rendezvous.
-            has_enemies=bool(obs.enemies) or (team_mode=='follower' and bool(sample['unverified_monsters']))
+            # Enemies listed but not yet positioned still count for a short
+            # while: the room is not empty, keep swinging instead of leaving.
+            pending=sample.get('pending_enemies',0)
+            if pending and not obs.enemies:pending_since=pending_since or time.monotonic()
+            else:pending_since=None
+            pending_active=bool(pending) and not obs.enemies and time.monotonic()-pending_since<3
+            has_enemies=bool(obs.enemies) or pending_active or (team_mode=='follower' and bool(sample['unverified_monsters']))
             exit_ready,new_wave=waves.update(has_enemies,now)
             remote=link.remote() if link else None
             linked=bool(remote and remote['active'] and remote['phase']=='combat')
@@ -264,6 +343,9 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 # Clearing/door navigation normally bypasses the combat
                 # planner. Let verified G transforms keep the summon alive.
                 decision=planner.step(obs,time.monotonic())
+            elif pending_active and team_mode!='follower' and hasattr(planner,'blind_step'):
+                exiting=None;destination=None
+                decision=planner.blind_step(time.monotonic()) or Decision('casting',reason='怪物坐标尚未加载，原地出招')
             elif obs.enemies:
                 if new_wave:
                     nav.reset(room)
@@ -300,6 +382,8 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                         win.release();nav.pause()
                         log.write(json.dumps({'time':time.time(),'scene':room,'position':obs.position,'enemies':len(obs.enemies),'state':'waiting_minimap','minimap':minimap,'map_diagnostic':map_signals.get('diagnostic'),'map_age':time.monotonic()-minimap_time,'confirmations':minimap_route.confirmations,'remembered_route':minimap_route.path},ensure_ascii=False)+'\n');log.flush()
                         if dungeon=='阿登高地' and minimap_route.status!='at_boss' and waves.confirmation_timed_out(now):
+                            if getattr(control,'auto_recover',False) and team_mode=='solo':
+                                outcome='minimap_timeout';emit('minimap_timeout',True,detail='小地图路线一直未确认，退出副本重进');break
                             control.paused.set()
                             emit('minimap_timeout',True,detail='清场确认已达10秒，小地图位置或连线仍未确认；已暂停')
                             continue
@@ -332,7 +416,10 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
                 decision=replace(decision,move=move)
                 if portal_move is None and nav.no_path:
                     (DATA/'navigation-failure.json').write_text(json.dumps({'time':time.time(),'scene':room,'position':obs.position,'destination':decision.destination,'reason':nav.failure_reason,'blocked':sorted(nav.blocked),'contacts':sorted(nav.contacts),'free':sorted(nav.free),'enemies':[{'x':e.x,'y':e.y,'id':e.identity} for e in obs.enemies]},ensure_ascii=False,indent=2),encoding='utf8')
-                    win.release();control.paused.set();emit('no_path',True,detail=nav.failure_reason or '未找到可通行路线');continue
+                    win.release()
+                    if getattr(control,'auto_recover',False) and team_mode=='solo':
+                        outcome='no_path';emit('no_path',True,detail=(nav.failure_reason or '未找到可通行路线')+'，退出副本重进');break
+                    control.paused.set();emit('no_path',True,detail=nav.failure_reason or '未找到可通行路线');continue
             else: nav.pause()
             emit(decision.state,detail=decision.reason,doors=[d['direction'] for d in doors])
             log.write(json.dumps({'time':time.time(),'scene':room,'position':obs.position,
@@ -349,9 +436,10 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
             if decision.tap:
                 was_retreat=False
                 skill=next((s for s in planner.skills if s.key==decision.tap),None)
-                if decision.action not in ('entry_buff','entry_helper'):
+                if decision.action not in ('entry_buff','entry_helper') and decision.state!='blind':
                     fresh=observe(connection,pid.value,facing,allowed_types=allowed,allowed_apcs=apcs,friendly_apcs=friends,friendly_monsters=summons,ignore_unknown=team_mode!='follower',generic_monsters=generic)
-                    if fresh is None or not attack_still_valid(decision,fresh[0],room,skill,planner.attack_range):
+                    lane=planner.spam_lane if skill is not None and getattr(planner,'spam_skill',lambda s:False)(skill) else 0
+                    if fresh is None or not attack_still_valid(decision,fresh[0],room,skill,planner.attack_range,lane):
                         planner.cancel_attack();win.release();continue
                 success=keys.cast(skill,hwnd,control.cancelled) if skill else keys.tap(decision.tap,hwnd,control.cancelled)
                 planner.acknowledge(decision,time.monotonic(),success)
@@ -387,6 +475,8 @@ def run_round(control,dungeon,report,solo=True,limit=1800):
         outcome='error';emit('error',True,detail=str(exc))
     finally:
         control.skill_last_used=dict(planner.last_used)
+        control.dual_blades_active=False  # H is reset by the game when a run ends
+        hotbar_reader.close()
         win.release();connection.close();log.close()
         if screen is not None:screen.close()
         if map_screen is not None:map_screen.close()
@@ -409,8 +499,8 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
             (DATA/'cycle-status.json').write_text(json.dumps({'result':'running','phase':update['state'],
                 'completed':completed,'repeat':repeat,'updated':time.time()},ensure_ascii=False,indent=2),encoding='utf-8')
     try:
-        if not generic and difficulty not in ('普通级','冒险级','勇士级'):
-            raise ValueError('当前开放普通、冒险、勇士级；不自动提高所选难度')
+        if not generic and difficulty not in DIFFICULTIES:
+            raise ValueError('可选普通、冒险、勇士、王者、地狱级；不自动提高所选难度')
         if repeat and (dungeon not in SUPPORTED_DUNGEONS or not solo):
             raise ValueError('循环模式仅支持已配置的单人副本')
         if control.character:
@@ -433,6 +523,21 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
         if allow_town_entry:
             from dungeon_farm.utilities import maintenance
             control.inventory=maintenance(control,lambda u:emit(u) if u['state']!='worker_ended' else None,'inspect_inventory')
+        recoveries=0
+        def recover(reason):
+            # Whatever stopped the round: leave to town and enter the same
+            # dungeon/difficulty again. Three failures in a row stop the run.
+            nonlocal recoveries,allow_town_entry
+            from dungeon_farm.recovery import RECOVERABLE,leave_dungeon
+            if (not getattr(control,'auto_recover',False) or control.stop.is_set() or reason not in RECOVERABLE
+                    or team_mode!='solo' or generic or not solo or recoveries>=3):
+                return False
+            recoveries+=1
+            emit({'state':'auto_reentry','detail':f'{reason}：退出副本后重新进入（连续第{recoveries}次）'})
+            left='town' if reason in ('returned_town','entry_failed','difficulty_unconfirmed') else leave_dungeon(control,emit)
+            if left!='town':return False
+            allow_town_entry=True;control.exit_choice=None
+            return True
         while not control.stop.is_set():
             before=control.inventory;round_start=time.time()
             control.round_start_cubes=before.get('cubes') if before else None
@@ -448,15 +553,19 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
                         outcome=prepare(control,emit,allow_town_entry=False,dungeon=dungeon,difficulty=difficulty)
                 if control.stop.is_set():outcome='stopped'
                 allow_town_entry=False
-                if outcome!='ready':break
+                if outcome!='ready':
+                    if recover(outcome):continue
+                    break
             result=run_round(control,dungeon,emit,solo,limit)
             outcome=result['result']
             if generic and outcome=='returned_town':
                 control.exit_choice=None
                 emit({'state':'waiting_manual_entry'})
                 continue
-            if outcome!='finished':break
-            completed+=1
+            if outcome!='finished':
+                if recover(outcome):continue
+                break
+            completed+=1;recoveries=0
             again=repeat and (max_runs is None or completed<max_runs)
             emit({'state':'round_finished'})
             outcome=replay(control,emit,result['scene'],result['profile'],dungeon=dungeon,reenter=again)
@@ -472,7 +581,9 @@ def run(control,dungeon,report,solo=True,limit=1800,repeat=False,difficulty='普
             if outcome=='town_reentry' and team_mode=='solo':
                 allow_town_entry=not generic;control.exit_choice=None
                 continue
-            if outcome!='reentered':break
+            if outcome!='reentered':
+                if recover(outcome):continue
+                break
             control.exit_choice=None
         else:outcome='stopped'
     except Exception as exc:
