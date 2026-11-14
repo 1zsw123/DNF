@@ -68,19 +68,26 @@ def connect_solo(pid, profile):
     return SoloReader(connect_verified(pid, profile))
 
 
+LAST_FAILURE = ''  # why the latest observe() returned None, for the run log
+
+
 def observe(connection, pid, facing=None, allowed_types=None, allowed_apcs=None, friendly_apcs=None, friendly_monsters=None, ignore_unknown=False, generic_monsters=False):
+    global LAST_FAILURE
     sample = connection.sample(pid)
     if not sample:
+        LAST_FAILURE = 'own_sample'
         return None
     reader = connection.reader
     scene = sample['scene']
     addresses = reader.object_addresses(scene)
     if not addresses:
+        LAST_FAILURE = 'object_list'
         return None
-    enemies = []; unknown = set(); unknown_details=[];friendly_names=[];g_confirmed=False
+    enemies = []; unknown = set(); unknown_details=[];friendly_names=[];g_confirmed=False;pending=0;guessed={}
     for address in set(addresses):
         raw = reader.process.read(address, 0x25c)
         if not raw:
+            LAST_FAILURE = 'object_read'
             return None
         vt, kind, obj_scene = (struct.unpack_from('<I', raw, offset)[0] for offset in (0,0x90,0xb8))
         if obj_scene==scene and kind==33 and not g_confirmed:
@@ -99,6 +106,11 @@ def observe(connection, pid, facing=None, allowed_types=None, allowed_apcs=None,
             if name in (friendly_apcs or {}).get(vt-reader.delta,()):
                 friendly_names.append(name);continue
             recognized=name in allowed_apcs.get(vt-reader.delta,())
+            if not recognized and generic_monsters and name.strip():
+                # Manual-entry mode: a named human-type object that is not a known
+                # ally is an enemy (e.g. 德魯伊·梅亞). The caller can retract
+                # the guess if it never dies (an unlisted ally).
+                recognized=True;guessed[hex(address)]=name
         else:
             if vt-reader.delta in (friendly_monsters or {}):
                 ptr=struct.unpack_from('<I',raw,0x258)[0]
@@ -115,18 +127,22 @@ def observe(connection, pid, facing=None, allowed_types=None, allowed_apcs=None,
                                     'xyz':struct.unpack_from('<3f',raw,0x18c)})
             continue
         x,y,z = struct.unpack_from('<3f',raw,0x18c)
-        if not all(math.isfinite(v) and abs(v)<100000 for v in (x,y,z)):
-            return None
-        if x==0 and y==0 and z==0:
+        if (not all(math.isfinite(v) and abs(v)<100000 for v in (x,y,z))) or (x==0 and y==0 and z==0):
             # Object-list membership can precede coordinate initialization.
-            # Do not chase the origin and learn false walls while loading.
-            return None
+            # Do not chase the origin or learn false walls, but do not throw
+            # away the rest of the frame either: report it as pending.
+            pending += 1
+            continue
         enemies.append(Enemy(hex(address), x, y))
     if reader.uint(reader.local_root) != sample['self_base'] or reader.uint(sample['self_base']+0xb8) != scene:
+        LAST_FAILURE = 'scene_changed'
         return None
     now = time.monotonic()
     if now-sample['time']>.1:
+        LAST_FAILURE = 'slow_read'
         return None
+    sample['pending_enemies'] = pending
+    sample['guessed_apcs'] = guessed
     sample['unverified_monsters'] = sorted(unknown)
     sample['friendly_apcs']=friendly_names
     sample['unverified_details'] = unknown_details

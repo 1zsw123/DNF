@@ -128,3 +128,70 @@ class SoloTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class PendingEnemyTests(unittest.TestCase):
+    def frame(self,coords):
+        from dungeon_farm import combat_telemetry
+        r=Mock();r.local_root=10;r.delta=0;r.self_name='上头狂战';r.leader_name='x'
+        r.uint.side_effect=lambda address:{10:100,100+0xb8:200}.get(address,0)
+        r.object_addresses.return_value=tuple([100]+[300+i for i in range(len(coords))])
+        def raw(address,size):
+            result=bytearray(size)
+            for offset,value in ((0,0x017930C4),(0x90,529),(0xb8,200)):
+                struct.pack_into('<I',result,offset,value)
+            if address>=300:struct.pack_into('<3f',result,0x18c,*coords[address-300])
+            return bytes(result)
+        r.process.read.side_effect=raw
+        connection=Mock(reader=r)
+        connection.sample.return_value={'scene':200,'self_base':100,'self':(50,60,0),'time':time.monotonic()}
+        return observe(connection,30),combat_telemetry
+
+    def test_uninitialized_enemy_is_pending_not_a_lost_frame(self):
+        (obs,sample),_=self.frame([(137,240,0),(0,0,0)])
+        self.assertEqual(len(obs.enemies),1)
+        self.assertEqual(sample['pending_enemies'],1)
+
+    def test_all_pending_still_returns_frame(self):
+        (obs,sample),_=self.frame([(0,0,0),(math.nan,1,1)])
+        self.assertEqual(obs.enemies,())
+        self.assertEqual(sample['pending_enemies'],2)
+
+    def test_failure_reason_is_recorded(self):
+        from dungeon_farm import combat_telemetry
+        connection=Mock();connection.sample.return_value=None
+        self.assertIsNone(observe(connection,30))
+        self.assertEqual(combat_telemetry.LAST_FAILURE,'own_sample')
+
+
+class GenericApcTests(unittest.TestCase):
+    def frame(self,name,generic=True,friends=None):
+        r=Mock();r.local_root=10;r.delta=0;r.self_name='上头狂战';r.leader_name='x'
+        r.uint.side_effect=lambda address:{10:100,100+0xb8:200}.get(address,0)
+        r.object_addresses.return_value=(100,300)
+        def raw(address,size):
+            if size==96:return name.encode('utf-16le')+bytes(2)
+            result=bytearray(size)
+            for offset,value in ((0,0x016FA1A4),(0x90,273),(0xb8,200),(0x258,0x5000)):
+                struct.pack_into('<I',result,offset,value)
+            if address==300:struct.pack_into('<3f',result,0x18c,166,311,0)
+            return bytes(result)
+        r.process.read.side_effect=raw
+        connection=Mock(reader=r)
+        connection.sample.return_value={'scene':200,'self_base':100,'self':(50,60,0),'time':time.monotonic()}
+        return observe(connection,30,allowed_apcs={},friendly_apcs=friends or {},generic_monsters=generic)
+
+    def test_generic_mode_targets_unlisted_human_enemy(self):
+        obs,sample=self.frame('德魯伊·梅亞')
+        self.assertEqual(len(obs.enemies),1)
+        self.assertEqual(sample['guessed_apcs'],{'0x12c':'德魯伊·梅亞'})
+        self.assertEqual(sample['unverified_monsters'],[])
+
+    def test_known_ally_is_never_targeted(self):
+        obs,sample=self.frame('偉大的杜爾夫',friends={0x016FA1A4:['偉大的杜爾夫']})
+        self.assertEqual(obs.enemies,())
+
+    def test_preset_modes_still_require_listed_names(self):
+        obs,sample=self.frame('德魯伊·梅亞',generic=False)
+        self.assertEqual(obs.enemies,())
+        self.assertEqual(sample['unverified_monsters'],['0x16fa1a4'])
